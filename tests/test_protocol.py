@@ -7,6 +7,7 @@ import pytest
 from selfctx._protocol import (
     FileRequest,
     ProtocolError,
+    RetrieveRequest,
     ToolRequest,
     check_args,
     parse,
@@ -31,6 +32,25 @@ def test_parses_summary_and_tool_calls_in_order() -> None:
                               FileRequest("a.py", (3, 9)), FileRequest("b.py", None)]
 
 
+def test_model_identifiers_and_retrieval_parse() -> None:
+    out = parse(_reply(tool_calls=[
+        {"id": "tests-before", "tool": "exec_shell", "args": {"command": "pytest"}},
+        {"id": "source-v1", "file": "a.py", "lines": [1, 20]},
+        {"retrieve": "tests-before"},
+        {"retrieve": ["source-v1", "tests-before"]}]), TOOLS)
+    assert out.tool_calls == [
+        ToolRequest("exec_shell", {"command": "pytest"}, "tests-before"),
+        FileRequest("a.py", (1, 20), "source-v1"),
+        RetrieveRequest(("tests-before",)),
+        RetrieveRequest(("source-v1", "tests-before"))]
+
+
+def test_identifier_is_optional_for_backward_compatibility() -> None:
+    out = parse(_reply(tool_calls=[{"tool": "exec_shell", "args": {}}]), TOOLS)
+    assert out.tool_calls == [ToolRequest("exec_shell", {})]
+    assert out.tool_calls[0].id is None
+
+
 def test_json_surrounded_by_text_is_accepted() -> None:
     assert parse("model output\n" + _reply() + "\n", TOOLS).summary == "previous turn did t"
 
@@ -48,7 +68,9 @@ def test_missing_summary_rejected() -> None:
 
 @pytest.mark.parametrize("call", [
     {"tool": "rm_rf"}, {"tool": "exec_shell", "args": "ls"}, {"file": "a", "lines": [5, 2]},
-    {"file": "a", "lines": [0, 2]}, {"file": 3}, {"x": 1}, "ls"])
+    {"file": "a", "lines": [0, 2]}, {"file": 3}, {"x": 1}, "ls",
+    {"id": "x"}, {"id": "", "tool": "exec_shell"}, {"id": 4, "file": "a"},
+    {"retrieve": []}, {"retrieve": ["ok", 3]}, {"retrieve": None}])
 def test_invalid_tool_call_rejected(call: object) -> None:
     with pytest.raises(ProtocolError):
         parse(_reply(tool_calls=[call]), TOOLS)
@@ -88,10 +110,16 @@ def test_turn_schema_has_summary_and_one_branch_per_tool() -> None:
     assert js["properties"]["summary"]["minLength"] == 1
     assert "max_index" not in js["properties"]
     assert "requests" not in js["properties"]
-    branch = js["properties"]["tool_calls"]["items"]["anyOf"][1]
-    assert branch["properties"]["tool"] == {"type": "string", "const": "exec_shell"}
-    assert branch["properties"]["args"]["additionalProperties"] is False
-    assert branch["properties"]["args"]["required"] == ["command"]
+    branches = js["properties"]["tool_calls"]["items"]["anyOf"]
+    file_branch, tool_branch, retrieve_branch = branches
+    assert file_branch["properties"]["id"]["type"] == "string"
+    assert tool_branch["required"] == ["tool", "args"]
+    assert tool_branch["properties"]["id"]["minLength"] == 1
+    assert tool_branch["properties"]["tool"] == {"type": "string", "const": "exec_shell"}
+    assert tool_branch["properties"]["args"]["additionalProperties"] is False
+    assert tool_branch["properties"]["args"]["required"] == ["command"]
+    assert retrieve_branch["required"] == ["retrieve"]
+    assert retrieve_branch["properties"]["retrieve"]["anyOf"][0] == {"type": "string", "minLength": 1}
 
 
 def test_check_args() -> None:

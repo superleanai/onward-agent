@@ -6,12 +6,21 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from agentknit import dispatch
 
 from ._items import Item, render, tokens
-from ._protocol import FileRequest, ProtocolError, Request, check_args, parse, response_format, system_prompt
+from ._protocol import (
+    FileRequest,
+    ProtocolError,
+    Request,
+    RetrieveRequest,
+    check_args,
+    parse,
+    response_format,
+    system_prompt,
+)
 
 _ECHOED_TAGS = re.compile(r"\A\s*(?:\[context\] [^\n{]*\n)+")
 _ENVELOPE = re.compile(r"\A<[0-9a-f]{8}[^>]*>\n?(.*?)</[0-9a-f]{8}>\s*\Z", re.DOTALL)
@@ -56,9 +65,26 @@ def _read(req: FileRequest, tool_dispatch: dict[str, Any]) -> Item:
     return Item("file", f"{req.path} lines {first}-{last}\n{numbered}")
 
 
-def _execute(req: Request, tool_dispatch: dict[str, Any], specs: dict[str, dict[str, Any]]) -> Item:
-    if isinstance(req, FileRequest):
-        return _read(req, tool_dispatch)
+def _execute(req: Request, tool_dispatch: dict[str, Any], specs: dict[str, dict[str, Any]],
+             results: dict[str, Item]) -> Item:
+    if isinstance(req, RetrieveRequest):
+        content = "\n\n".join(
+            results[id_].content if id_ in results else f"unknown tool-call id {id_!r}"
+            for id_ in req.ids)
+        kind: Literal["error", "tool_result"] = (
+            "error" if any(id_ not in results for id_ in req.ids) else "tool_result")
+        return Item(kind, content)
+    if req.id is not None and req.id in results:
+        return Item("error", f"<{req.id}>\nnot run: duplicate tool-call id {req.id!r}")
+    result = _read(req, tool_dispatch) if isinstance(req, FileRequest) else _run_tool(req, tool_dispatch, specs)
+    if req.id is not None:
+        result = Item(result.kind, f"<{req.id}>\n{result.content}")
+        results[req.id] = result
+    return result
+
+
+def _run_tool(req: Request, tool_dispatch: dict[str, Any], specs: dict[str, dict[str, Any]]) -> Item:
+    assert not isinstance(req, FileRequest | RetrieveRequest)
     header = f"{req.tool} {json.dumps(req.args)[:200]}"
     if problem := check_args(specs[req.tool], req.args):
         return Item("error", f"{header}\nnot run: {problem}")
@@ -93,6 +119,7 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
     tools = set(specs)
     system = system_prompt(tool_specs)
     items = [Item("task", task)]
+    results: dict[str, Item] = {}  # full, uncapped results keyed by model-supplied id
     params = dict(request_params or {})
     if schema:
         params["extra_body"] = {**params.get("extra_body", {}), "response_format": response_format(tool_specs)}
@@ -119,9 +146,13 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
                     if log:
                         log.write(json.dumps(record) + "\n")
                     return Result(out.done, items, turn)
-                new = [_cap(_execute(call, tool_dispatch, specs), max_item_chars) for call in out.tool_calls]
+                new = [item if isinstance(call, RetrieveRequest) else _cap(item, max_item_chars)
+                       for call in out.tool_calls
+                       for item in [_execute(call, tool_dispatch, specs, results)]]
                 items = items + [Item("model_output", reply)] + new
-                record["new_items"] = [[item.kind, tokens(item.content)] for item in new]
+                record["new_items"] = [[item.kind, tokens(item.content), call.id]
+                                       for item, call in zip(new, out.tool_calls, strict=True)
+                                       if not isinstance(call, RetrieveRequest)]
             record["items_after"] = len(items)
             if log:
                 log.write(json.dumps(record) + "\n")

@@ -39,7 +39,8 @@ def render(items: list[Item], system: str, budget: int | None = None) -> list[di
     status += (
         "\nReply with one JSON object. Summarize the previous turn in "
         "`summary`; this summary is durable context. List the next tool calls "
-        "in `tool_calls`, or set `done` to the final answer."
+        "in `tool_calls`, with an `id` on each call; use `retrieve` to append a past result by ID. "
+        "Set `done` to the final answer when finished."
     )
     messages.append({"role": "user", "content": status})
     return messages

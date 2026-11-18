@@ -126,6 +126,61 @@ def test_log_contains_durable_summary_and_new_items(tools: Any, tmp_path: Path) 
     assert "max_index" not in records[0]
 
 
+def test_model_ids_label_results_and_retrieve_past_full_results(tools: Any, tmp_path: Path) -> None:
+    client = Scripted([
+        _r("make initial observations", [
+            {"id": "shell-a", "tool": "exec_shell", "args": {"command": "echo a"}},
+            {"id": "shell-b", "tool": "exec_shell", "args": {"command": "echo b"}}]),
+        _r("initial results are stored", [{"retrieve": "shell-a"}]),
+        _r("retrieved shell-a", done="ok")])
+    result = _run(client, tools, tmp_path)
+    assert client.calls[1][3]["content"].startswith("<shell-a>\nexec_shell ")
+    assert client.calls[1][4]["content"].startswith("<shell-b>\nexec_shell ")
+    retrieved = client.calls[2][-2]["content"]
+    assert retrieved.startswith("<shell-a>\nexec_shell ")
+    assert retrieved.endswith('"returncode":0}')
+    assert result.items[-2].content == retrieved
+
+
+def test_retrieval_does_not_rerun_tool(tools: Any, tmp_path: Path) -> None:
+    marker = tmp_path / "once"
+    client = Scripted([
+        _r("write once", [{"id": "write-1", "tool": "write_file",
+                            "args": {"path": str(marker), "content": "one"}}]),
+        _r("retrieve write result", [{"retrieve": "write-1"}]),
+        _r("retrieved write result", done="ok")])
+    _run(client, tools, tmp_path)
+    assert marker.read_text() == "one"
+    assert "write_file" in client.calls[2][-2]["content"]
+
+
+def test_retrieval_recovers_uncapped_past_result(tools: Any, tmp_path: Path) -> None:
+    client = Scripted([
+        _r("produce long output", [{"id": "long-output", "tool": "exec_shell",
+                                     "args": {"command": "python3 -c 'print(12345)'"}}]),
+        _r("retrieve long output", [{"retrieve": "long-output"}]),
+        _r("retrieved full output", done="ok")])
+    _run(client, tools, tmp_path, max_item_chars=50)
+    first = client.calls[1][3]["content"]
+    retrieved = client.calls[2][-2]["content"]
+    assert "characters truncated by the host" in first
+    assert "characters truncated by the host" not in retrieved
+    assert "12345" in retrieved
+
+
+def test_unknown_or_duplicate_ids_become_result_errors(tools: Any, tmp_path: Path) -> None:
+    client = Scripted([
+        _r("missing id", [{"retrieve": "missing"}]),
+        _r("duplicate id", [{"id": "dup", "tool": "exec_shell", "args": {"command": "echo one"}},
+                             {"id": "dup", "tool": "exec_shell", "args": {"command": "echo two"}}]),
+        _r("finished", done="ok")])
+    _run(client, tools, tmp_path)
+    assert "unknown tool-call id 'missing'" in client.calls[1][3]["content"]
+    assert "not run: duplicate tool-call id 'dup'" in client.calls[2][-2]["content"]
+    records = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
+    assert records[1]["new_items"][0][2] == "dup"
+
+
 def test_max_turns_returns_without_final(tools: Any, tmp_path: Path) -> None:
     client = Scripted([_r("continue")])
     result = _run(client, tools, tmp_path, max_turns=1)

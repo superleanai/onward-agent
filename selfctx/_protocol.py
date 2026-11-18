@@ -15,15 +15,22 @@ class ProtocolError(ValueError):
 class FileRequest:
     path: str
     lines: tuple[int, int] | None  # 1-based, inclusive; None = agentknit's default read
+    id: str | None = None
 
 
 @dataclass(frozen=True)
 class ToolRequest:
     tool: str
     args: dict[str, Any] = field(default_factory=dict)
+    id: str | None = None
 
 
-Request = FileRequest | ToolRequest
+@dataclass(frozen=True)
+class RetrieveRequest:
+    ids: tuple[str, ...]
+
+
+Request = FileRequest | ToolRequest | RetrieveRequest
 
 
 @dataclass(frozen=True)
@@ -42,8 +49,9 @@ tool results, and errors in chronological order.
 
 Each reply of yours is exactly one JSON object, nothing else:
 {{"summary": "<summary of the previous turn>",
- "tool_calls": [ {{"file": "<path>", "lines": [<first>, <last>]}},
-                 {{"tool": "<name>", "args": {{...}}}} ],
+ "tool_calls": [ {{"id": "source-v1", "file": "<path>", "lines": [<first>, <last>]}},
+                 {{"id": "tests-before", "tool": "<name>", "args": {{...}}}},
+                 {{"retrieve": "tests-before"}} ],
  "done": null}}
 
 "summary" is long-term durable context. It is appended verbatim and remains in every later turn.
@@ -54,10 +62,16 @@ needed later; do not merely say that a tool ran. Never invent an outcome for a c
 The raw replies, observations, and all summaries remain visible, so do not repeat them at length.
 
 "tool_calls" is an ordered list. The host executes every call and appends its result before the
-next turn, in the order listed. A file call appends an excerpt with 1-based, inclusive line numbers
-("lines": null gives the first 100 lines). It also registers a read required before editing an
-existing file. A tool call runs the named tool with "args" and appends its result. Do not request
-file or tool results you already have unless you need to verify fresh state.
+next turn, in the order listed. Give every file or tool call a unique, descriptive "id" string of
+your choice. The result is headed `<your-id>` and stored durably, including when the visible result
+was shortened. Later, {{"retrieve": "your-id"}} appends that exact full stored result without
+rerunning the tool. Use this when you need a past result again. Retrieval is not file editing or
+backtracking: it only appends a copy and never removes context.
+
+A file call appends an excerpt with 1-based, inclusive line numbers ("lines": null gives the first
+100 lines). It also registers a read required before editing an existing file. A tool call runs the
+named tool with "args" and appends its result. Do not rerun a call merely to see its old output:
+retrieve it by id. Make a fresh call when you need to verify fresh state.
 
 Your context has a cost: every entry is re-read each turn, and a long context dilutes attention.
 The last message gives its size and soft budget. Keep summaries compact but complete. Earlier
@@ -96,25 +110,36 @@ def _json_object(reply: str) -> dict[str, Any]:
 def _request(raw: Any, tools: set[str]) -> Request:
     if not isinstance(raw, dict):
         raise ProtocolError(f"tool call {raw!r} is not an object")
+    if "retrieve" in raw:
+        ids = raw["retrieve"]
+        if isinstance(ids, str):
+            ids = [ids]
+        if (not isinstance(ids, list) or not ids
+                or not all(isinstance(id_, str) and id_.strip() for id_ in ids)):
+            raise ProtocolError("retrieve must be an id or a non-empty list of id strings")
+        return RetrieveRequest(tuple(ids))
+    id_ = raw.get("id")
+    if id_ is not None and (not isinstance(id_, str) or not id_.strip()):
+        raise ProtocolError("id must be a non-empty string")
     if "file" in raw:
         path, lines = raw["file"], raw.get("lines")
         if not isinstance(path, str):
             raise ProtocolError(f"file call {raw!r}: file must be a string")
         if lines is None:
-            return FileRequest(path, None)
+            return FileRequest(path, None, id_)
         if (not isinstance(lines, list) or len(lines) != 2
                 or not all(isinstance(n, int) and not isinstance(n, bool) for n in lines)
                 or not 1 <= lines[0] <= lines[1]):
             raise ProtocolError(f"file call {raw!r}: lines must be [first, last] with 1 <= first <= last")
-        return FileRequest(path, (lines[0], lines[1]))
+        return FileRequest(path, (lines[0], lines[1]), id_)
     if "tool" in raw:
         name, args = raw["tool"], raw.get("args", {})
         if name not in tools:
             raise ProtocolError(f"unknown tool {name!r}; available: {', '.join(sorted(tools))}")
         if not isinstance(args, dict):
             raise ProtocolError(f"tool call {raw!r}: args must be an object")
-        return ToolRequest(name, args)
-    raise ProtocolError(f"tool call {raw!r} has neither 'file' nor 'tool'")
+        return ToolRequest(name, args, id_)
+    raise ProtocolError(f"tool call {raw!r} has neither 'file', 'tool', nor 'retrieve'")
 
 
 def parse(reply: str, tools: set[str]) -> Output:
@@ -137,7 +162,8 @@ def _tool_branch(spec: dict[str, Any]) -> dict[str, Any]:
     params = spec["function"]["parameters"]
     args = {**params, "additionalProperties": False}
     return {"type": "object", "additionalProperties": False, "required": ["tool", "args"],
-            "properties": {"tool": {"type": "string", "const": spec["function"]["name"]}, "args": args}}
+            "properties": {"id": {"type": "string", "minLength": 1},
+                           "tool": {"type": "string", "const": spec["function"]["name"]}, "args": args}}
 
 
 def turn_schema(tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -146,14 +172,21 @@ def turn_schema(tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
     Endpoints may only follow it as an instruction (Kimi does), so `parse` and `check_args` still validate.
     """
     file_call = {"type": "object", "additionalProperties": False, "required": ["file", "lines"],
-                 "properties": {"file": {"type": "string"},
+                 "properties": {"id": {"type": "string", "minLength": 1},
+                                "file": {"type": "string"},
                                 "lines": {"type": ["array", "null"], "minItems": 2, "maxItems": 2,
                                           "items": {"type": "integer", "minimum": 1}}}}
+    retrieve_call = {"type": "object", "additionalProperties": False, "required": ["retrieve"],
+                     "properties": {"retrieve": {"anyOf": [
+                         {"type": "string", "minLength": 1},
+                         {"type": "array", "minItems": 1,
+                          "items": {"type": "string", "minLength": 1}}]}}}
     return {"type": "object", "additionalProperties": False,
             "required": ["summary", "tool_calls", "done"],
             "properties": {"summary": {"type": "string", "minLength": 1},
                            "tool_calls": {"type": "array", "items": {
-                               "anyOf": [file_call] + [_tool_branch(t) for t in tool_specs]}},
+                               "anyOf": [file_call] + [_tool_branch(t) for t in tool_specs]
+                               + [retrieve_call]}},
                            "done": {"type": ["string", "null"]}}}
 
 

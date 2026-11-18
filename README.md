@@ -1,15 +1,20 @@
 # selfctx2
 
-A coding agent with a monotonic, append-only context loop. At every turn the model writes a durable
-summary of the previous turn and an ordered list of structured tool calls. There are no numbered
-context items, no context truncation, and no backtracking.
+A coding agent with a monotonic, append-only context loop.
+
+Core concept: at every turn the model writes a durable summary of the previous turn and an ordered
+list of structured tool calls. Model-assigned tool-call IDs make every stored result addressable and
+retrievable without rerunning the tool.
+
+This differs from traditional coding agents, which keep everything in the context, and from selfctx,
+whose numbered context can be truncated and backtracked.
+
 Related work is surveyed in [PRIOR-ART.md](PRIOR-ART.md).
 
 ## Context model
 
-- The task is the first message after the system prompt.
-- Every later model reply, file excerpt, tool result, and error is appended in chronological order.
-  Nothing already in the context is edited, removed, or reordered.
+- The task is the first message after the system prompt. Model replies, observations, and errors are
+  appended chronologically and never edited, removed, or reordered.
 - A model reply contains a `summary`; the complete reply is appended verbatim, so every summary is
   durable context available on all later turns. The summary is also recorded separately in the run log.
 - The first turn has no previous turn to summarize. Its summary records the model's initial
@@ -25,8 +30,9 @@ Each model response is one JSON object:
 {
   "summary": "What the previous turn established or changed, and the resulting next step",
   "tool_calls": [
-    {"file": "path/to/file.py", "lines": [10, 40]},
-    {"tool": "exec_shell", "args": {"command": "pytest -q"}}
+    {"id": "source-v1", "file": "path/to/file.py", "lines": [10, 40]},
+    {"id": "tests-before", "tool": "exec_shell", "args": {"command": "pytest -q"}},
+    {"retrieve": "source-v1"}
   ],
   "done": null
 }
@@ -34,9 +40,14 @@ Each model response is one JSON object:
 
 - `summary` is a required, non-empty string. It should preserve exact facts needed later without
   unnecessarily repeating observations that remain in context.
-- `tool_calls` is an ordered list of file excerpts and tool calls. The host executes all of them and
-  appends one result per call in the listed order. A file call's line range is 1-based and inclusive;
-  `"lines": null` uses the default read length. File calls also register reads required by edit tools.
+- `tool_calls` is an ordered list of file excerpts, tool calls, and retrievals. The host executes all
+  of them and appends one result per call in the listed order. A file call's line range is 1-based and
+  inclusive; `"lines": null` uses the default read length. File calls also register reads required by
+  edit tools.
+- `id` is a model-chosen string identifying a file or tool call. Results are headed `<id>`. The host
+  retains the full result in a per-run store. `{"retrieve": "id"}` appends that full stored result
+  without executing the tool again; a list of IDs is also accepted. IDs must be unique, and retrieval
+  of an unknown ID returns an error. The field remains optional so existing callers remain valid.
 - `done` is normally `null`. A string ends the run with that final answer; tool calls are then ignored.
 
 Malformed output and invalid tool calls produce appended error context. The model can correct itself
@@ -66,8 +77,8 @@ compaction and awareness features do not alter this loop.
 
 Each request carries the constant turn schema as `response_format: json_schema`, with the argument
 schema of each available tool. Replies and tool arguments are also validated by the host because an
-endpoint may accept a schema without enforcing it during decoding. Tool outputs longer than 30,000
-characters keep their head and tail.
+endpoint may accept a schema without enforcing it during decoding. New tool outputs longer than
+30,000 characters keep their head and tail; retrieval by ID returns the full stored result.
 
 ## Install
 
@@ -91,7 +102,7 @@ the turn schema for endpoints without `json_schema`. The context budget is soft 
 the host never truncates context.
 
 Each run writes `runs/<timestamp>.jsonl`, one record per turn: `turn`, `items_before`, `items_after`,
-`summary`, `new_items` (kind and estimated tokens of each observation), `usage` (`prompt_tokens`,
+`summary`, `new_items` (kind, estimated tokens, and model-assigned ID when present), `usage` (`prompt_tokens`,
 `completion_tokens`, `cached_tokens`), `finish_reason`, `reply`, and `error` when the reply broke the
 protocol. On a protocol error, `summary` and `new_items` are absent.
 
