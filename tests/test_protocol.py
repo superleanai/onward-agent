@@ -24,9 +24,9 @@ def _reply(**kw: object) -> str:
 
 def test_parses_summary_and_tool_calls_in_order() -> None:
     out = parse(_reply(tool_calls=[
-        {"id": "shell", "tool": "exec_shell", "args": {"command": "ls"}},
-        {"id": "file-a", "file": "a.py", "lines": [3, 9]},
-        {"id": "file-b", "file": "b.py"}]), TOOLS)
+        {"type": "tool", "id": "shell", "tool": "exec_shell", "args": {"command": "ls"}},
+        {"type": "file", "id": "file-a", "file": "a.py", "lines": [3, 9]},
+        {"type": "file", "id": "file-b", "file": "b.py"}]), TOOLS)
     assert out.summary == "previous turn did t"
     assert out.tool_calls == [ToolRequest("exec_shell", {"command": "ls"}, "shell"),
                               FileRequest("a.py", (3, 9), "file-a"), FileRequest("b.py", None, "file-b")]
@@ -34,10 +34,10 @@ def test_parses_summary_and_tool_calls_in_order() -> None:
 
 def test_model_identifiers_and_retrieval_parse() -> None:
     out = parse(_reply(tool_calls=[
-        {"id": "tests-before", "tool": "exec_shell", "args": {"command": "pytest"}},
-        {"id": "source-v1", "file": "a.py", "lines": [1, 20]},
-        {"retrieve": "tests-before"},
-        {"retrieve": ["source-v1", "tests-before"]}]), TOOLS)
+        {"type": "tool", "id": "tests-before", "tool": "exec_shell", "args": {"command": "pytest"}},
+        {"type": "file", "id": "source-v1", "file": "a.py", "lines": [1, 20]},
+        {"type": "retrieve", "retrieve": "tests-before"},
+        {"type": "retrieve", "retrieve": ["source-v1", "tests-before"]}]), TOOLS)
     assert out.tool_calls == [
         ToolRequest("exec_shell", {"command": "pytest"}, "tests-before"),
         FileRequest("a.py", (1, 20), "source-v1"),
@@ -47,7 +47,7 @@ def test_model_identifiers_and_retrieval_parse() -> None:
 
 def test_identifier_is_mandatory() -> None:
     with pytest.raises(ProtocolError, match="requires id"):
-        parse(_reply(tool_calls=[{"tool": "exec_shell", "args": {}}]), TOOLS)
+        parse(_reply(tool_calls=[{"type": "tool", "tool": "exec_shell", "args": {}}]), TOOLS)
 
 
 def test_json_surrounded_by_text_is_accepted() -> None:
@@ -66,10 +66,16 @@ def test_missing_summary_rejected() -> None:
 
 
 @pytest.mark.parametrize("call", [
-    {"tool": "rm_rf"}, {"tool": "exec_shell", "args": "ls"}, {"file": "a", "lines": [5, 2]},
-    {"file": "a", "lines": [0, 2]}, {"file": 3}, {"x": 1}, "ls",
-    {"id": "x"}, {"id": "", "tool": "exec_shell"}, {"id": 4, "file": "a"},
-    {"retrieve": []}, {"retrieve": ["ok", 3]}, {"retrieve": None}])
+    {"type": "tool", "tool": "rm_rf"},
+    {"type": "tool", "tool": "exec_shell", "args": "ls"},
+    {"type": "file", "file": "a", "lines": [5, 2]},
+    {"type": "file", "file": "a", "lines": [0, 2]},
+    {"type": "file", "file": 3}, {"x": 1}, "ls", {"id": "x"},
+    {"type": "tool", "id": "", "tool": "exec_shell"},
+    {"type": "file", "id": 4, "file": "a"},
+    {"type": "retrieve", "retrieve": []},
+    {"type": "retrieve", "retrieve": ["ok", 3]},
+    {"type": "retrieve", "retrieve": None}])
 def test_invalid_tool_call_rejected(call: object) -> None:
     with pytest.raises(ProtocolError):
         parse(_reply(tool_calls=[call]), TOOLS)
@@ -112,12 +118,15 @@ def test_turn_schema_has_summary_and_one_branch_per_tool() -> None:
     branches = js["properties"]["tool_calls"]["items"]["anyOf"]
     file_branch, tool_branch, retrieve_branch = branches
     assert file_branch["properties"]["id"]["type"] == "string"
-    assert tool_branch["required"] == ["id", "tool", "args"]
+    assert tool_branch["required"] == ["type", "id", "tool", "args"]
     assert tool_branch["properties"]["id"]["minLength"] == 1
     assert tool_branch["properties"]["tool"] == {"type": "string", "const": "exec_shell"}
     assert tool_branch["properties"]["args"]["additionalProperties"] is False
     assert tool_branch["properties"]["args"]["required"] == ["command"]
-    assert retrieve_branch["required"] == ["retrieve"]
+    assert file_branch["properties"]["type"] == {"const": "file"}
+    assert tool_branch["properties"]["type"] == {"const": "tool"}
+    assert retrieve_branch["properties"]["type"] == {"const": "retrieve"}
+    assert retrieve_branch["required"] == ["type", "retrieve"]
     assert retrieve_branch["properties"]["retrieve"]["anyOf"][0] == {"type": "string", "minLength": 1}
 
 
@@ -130,6 +139,13 @@ def test_check_args() -> None:
 
 def test_schema_shaped_reply_parses() -> None:
     reply = json.dumps({"summary": "s", "done": None,
-                        "tool_calls": [{"id": "f", "file": "a", "lines": None},
-                                       {"id": "x", "tool": "exec_shell", "args": {}}]})
+                        "tool_calls": [{"type": "file", "id": "f", "file": "a", "lines": None},
+                                       {"type": "tool", "id": "x", "tool": "exec_shell", "args": {}}]})
     assert parse(reply, TOOLS).tool_calls == [FileRequest("a", None, "f"), ToolRequest("exec_shell", {}, "x")]
+
+
+def test_type_is_mandatory_and_must_match_call() -> None:
+    with pytest.raises(ProtocolError, match="type"):
+        parse(_reply(tool_calls=[{"id": "x", "tool": "exec_shell", "args": {}}]), TOOLS)
+    with pytest.raises(ProtocolError):
+        parse(_reply(tool_calls=[{"type": "file", "id": "x", "tool": "exec_shell", "args": {}}]), TOOLS)

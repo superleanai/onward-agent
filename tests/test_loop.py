@@ -30,6 +30,8 @@ class Scripted:
 def _r(summary: str, tool_calls: list[dict[str, Any]] | None = None, done: str | None = None) -> str:
     calls = []
     for n, call in enumerate(tool_calls or []):
+        call_type = "retrieve" if "retrieve" in call else "file" if "file" in call else "tool"
+        call = {"type": call_type, **call}
         if "retrieve" not in call:
             call = {"id": f"call-{summary}-{n}", **call}
         calls.append(call)

@@ -30,9 +30,9 @@ Each model response is one JSON object:
 {
   "summary": "What the previous turn established or changed, and the resulting next step",
   "tool_calls": [
-    {"id": "source-v1", "file": "path/to/file.py", "lines": [10, 40]},
-    {"id": "tests-before", "tool": "exec_shell", "args": {"command": "pytest -q"}},
-    {"retrieve": "source-v1"}
+    {"type": "file", "id": "source-v1", "file": "path/to/file.py", "lines": [10, 40]},
+    {"type": "tool", "id": "tests-before", "tool": "exec_shell", "args": {"command": "pytest -q"}},
+    {"type": "retrieve", "retrieve": "source-v1"}
   ],
   "done": null
 }
@@ -40,15 +40,16 @@ Each model response is one JSON object:
 
 - `summary` is a required, non-empty string. It should preserve exact facts needed later without
   unnecessarily repeating observations that remain in context.
-- `tool_calls` is an ordered list of file excerpts, tool calls, and retrievals. The host executes all
-  of them and appends one result per call in the listed order. A file call's line range is 1-based and
-  inclusive; `"lines": null` uses the default read length. File calls also register reads required by
-  edit tools.
+- `tool_calls` is an ordered list of file excerpts, tool calls, and retrievals. Every entry has an
+  explicit `type`: `file`, `tool`, or `retrieve`. The host executes all of them and appends one
+  result per call in the listed order. A file call's line range is 1-based and inclusive;
+  `"lines": null` uses the default read length. File calls also register reads required by edit
+  tools.
 - `id` is a model-chosen string identifying a file or tool call. Results are headed `<id>`. The host
-  retains the full result in a per-run store. `{"retrieve": "id"}` appends that full stored result
-  without executing the tool again; a list of IDs is also accepted. IDs must be unique, and retrieval
-  of an unknown ID returns an error. IDs are mandatory. Full results are stored on disk, not in RAM;
-only the small ID/path index stays in memory.
+  retains the full result in a per-run store. `{"type": "retrieve", "retrieve": "id"}` appends that
+  full stored result without executing the tool again; a list of IDs is also accepted. IDs must be
+  unique, and retrieval of an unknown ID returns an error. IDs are mandatory. Full results are
+  stored on disk, not in RAM; only the small ID/path index stays in memory.
 - `done` is normally `null`. A string ends the run with that final answer; tool calls are then ignored.
 
 Malformed output and invalid tool calls produce appended error context. The model can correct itself

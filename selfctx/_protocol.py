@@ -49,9 +49,9 @@ tool results, and errors in chronological order.
 
 Each reply of yours is exactly one JSON object, nothing else:
 {{"summary": "<summary of the previous turn>",
- "tool_calls": [ {{"id": "source-v1", "file": "<path>", "lines": [<first>, <last>]}},
-                 {{"id": "tests-before", "tool": "<name>", "args": {{...}}}},
-                 {{"retrieve": "tests-before"}} ],
+ "tool_calls": [ {{"type": "file", "id": "source-v1", "file": "<path>", "lines": [<first>, <last>]}},
+                 {{"type": "tool", "id": "tests-before", "tool": "<name>", "args": {{...}}}},
+                 {{"type": "retrieve", "retrieve": "tests-before"}} ],
  "done": null}}
 
 "summary" is long-term durable context. It is appended verbatim and remains in every later turn.
@@ -61,10 +61,11 @@ tool outcome, important file contents or errors, and the resulting next step. In
 needed later; do not merely say that a tool ran. Never invent an outcome for a call not yet run.
 The raw replies, observations, and all summaries remain visible, so do not repeat them at length.
 
-"tool_calls" is an ordered list. The host executes every call and appends its result before the
-next turn, in the order listed. Give every file or tool call a unique, descriptive "id" string of
-your choice; it is mandatory. The result is headed `<your-id>` and stored on disk, including when
-the visible result was shortened. Later, {{"retrieve": "your-id"}} appends that exact full stored result without
+"tool_calls" is an ordered list. Every entry has a "type": "file", "tool", or "retrieve". The
+host executes every call and appends its result before the next turn, in the order listed. Give
+every file or tool call a unique, descriptive "id" string of your choice; it is mandatory. The
+result is headed `<your-id>` and stored on disk, including when the visible result was shortened.
+Later, {{"type": "retrieve", "retrieve": "your-id"}} appends that exact full stored result without
 rerunning the tool. Use this when you need a past result again. Retrieval is not file editing or
 backtracking: it only appends a copy and never removes context.
 
@@ -110,7 +111,12 @@ def _json_object(reply: str) -> dict[str, Any]:
 def _request(raw: Any, tools: set[str]) -> Request:
     if not isinstance(raw, dict):
         raise ProtocolError(f"tool call {raw!r} is not an object")
-    if "retrieve" in raw:
+    type_ = raw.get("type")
+    if type_ not in {"file", "tool", "retrieve"}:
+        raise ProtocolError("type must be exactly 'file', 'tool', or 'retrieve'")
+    if type_ == "retrieve":
+        if "retrieve" not in raw:
+            raise ProtocolError("retrieve call requires retrieve id(s)")
         ids = raw["retrieve"]
         if isinstance(ids, str):
             ids = [ids]
@@ -121,7 +127,9 @@ def _request(raw: Any, tools: set[str]) -> Request:
     id_ = raw.get("id")
     if not isinstance(id_, str) or not id_.strip():
         raise ProtocolError("every file or tool call requires id, a non-empty string")
-    if "file" in raw:
+    if type_ == "file":
+        if "file" not in raw:
+            raise ProtocolError("file call requires file")
         path, lines = raw["file"], raw.get("lines")
         if not isinstance(path, str):
             raise ProtocolError(f"file call {raw!r}: file must be a string")
@@ -132,7 +140,9 @@ def _request(raw: Any, tools: set[str]) -> Request:
                 or not 1 <= lines[0] <= lines[1]):
             raise ProtocolError(f"file call {raw!r}: lines must be [first, last] with 1 <= first <= last")
         return FileRequest(path, (lines[0], lines[1]), id_)
-    if "tool" in raw:
+    if type_ == "tool":
+        if "tool" not in raw:
+            raise ProtocolError("tool call requires tool")
         name, args = raw["tool"], raw.get("args", {})
         if name not in tools:
             raise ProtocolError(f"unknown tool {name!r}; available: {', '.join(sorted(tools))}")
@@ -161,8 +171,8 @@ def _tool_branch(spec: dict[str, Any]) -> dict[str, Any]:
     """Schema of one tool call: the tool name as a constant and its own parameters."""
     params = spec["function"]["parameters"]
     args = {**params, "additionalProperties": False}
-    return {"type": "object", "additionalProperties": False, "required": ["id", "tool", "args"],
-            "properties": {"id": {"type": "string", "minLength": 1},
+    return {"type": "object", "additionalProperties": False, "required": ["type", "id", "tool", "args"],
+            "properties": {"type": {"const": "tool"}, "id": {"type": "string", "minLength": 1},
                            "tool": {"type": "string", "const": spec["function"]["name"]}, "args": args}}
 
 
@@ -171,13 +181,13 @@ def turn_schema(tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
 
     Endpoints may only follow it as an instruction (Kimi does), so `parse` and `check_args` still validate.
     """
-    file_call = {"type": "object", "additionalProperties": False, "required": ["id", "file", "lines"],
-                 "properties": {"id": {"type": "string", "minLength": 1},
+    file_call = {"type": "object", "additionalProperties": False, "required": ["type", "id", "file", "lines"],
+                 "properties": {"type": {"const": "file"}, "id": {"type": "string", "minLength": 1},
                                 "file": {"type": "string"},
                                 "lines": {"type": ["array", "null"], "minItems": 2, "maxItems": 2,
                                           "items": {"type": "integer", "minimum": 1}}}}
-    retrieve_call = {"type": "object", "additionalProperties": False, "required": ["retrieve"],
-                     "properties": {"retrieve": {"anyOf": [
+    retrieve_call = {"type": "object", "additionalProperties": False, "required": ["type", "retrieve"],
+                     "properties": {"type": {"const": "retrieve"}, "retrieve": {"anyOf": [
                          {"type": "string", "minLength": 1},
                          {"type": "array", "minItems": 1,
                           "items": {"type": "string", "minLength": 1}}]}}}
