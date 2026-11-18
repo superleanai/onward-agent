@@ -28,7 +28,12 @@ class Scripted:
 
 
 def _r(summary: str, tool_calls: list[dict[str, Any]] | None = None, done: str | None = None) -> str:
-    return json.dumps({"summary": summary, "tool_calls": tool_calls or [], "done": done})
+    calls = []
+    for n, call in enumerate(tool_calls or []):
+        if "retrieve" not in call:
+            call = {"id": f"call-{summary}-{n}", **call}
+        calls.append(call)
+    return json.dumps({"summary": summary, "tool_calls": calls, "done": done})
 
 
 @pytest.fixture

@@ -54,3 +54,20 @@ call IDs allow earlier full tool results to be retrieved without rerunning them.
 - [KVTether](https://arxiv.org/abs/2609.39819) (2026). Lifecycle-aware KV-cache management for ReAct
   agents reclaims discarded entries on the serving side. selfctx2 instead avoids discarding prefix
   entries at the client-protocol level.
+
+## Cache and cost cues
+
+The predecessor's survey identifies a gap: agents are shown token budgets, but not their own cache
+hits or the uncached cost of cuts. selfctx2 removes cuts entirely; IDs and retrieval are exposed in
+the constant system prompt and JSON schema, while the changing cache/context cue remains last so
+it cannot invalidate the prefix. The closest cache-cue work is:
+
+- [TokenPilot](https://arxiv.org/abs/2606.17016) (2026): stable placeholders and harness-controlled
+  lifecycle eviction for cache efficiency; selfctx2 instead gives the model exact result handles.
+- [Cache-Aware Prompt Compression](https://arxiv.org/abs/2607.15516) (2026): prices cached and
+  uncached input separately, the cost distinction behind the cache cue.
+- [OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching):
+  reuse requires an unchanged prefix; a cached prefix processed twice is cheaper than two uncached
+  reads. Retrieval therefore appends and never rewrites the identified original.
+- [Budget-Aware Tool-Use](https://arxiv.org/abs/2511.17006) (2025): exposing resource budgets changes
+  agent behavior; nearest analogue to showing context/cache state to the model.

@@ -24,12 +24,12 @@ def _reply(**kw: object) -> str:
 
 def test_parses_summary_and_tool_calls_in_order() -> None:
     out = parse(_reply(tool_calls=[
-        {"tool": "exec_shell", "args": {"command": "ls"}},
-        {"file": "a.py", "lines": [3, 9]},
-        {"file": "b.py"}]), TOOLS)
+        {"id": "shell", "tool": "exec_shell", "args": {"command": "ls"}},
+        {"id": "file-a", "file": "a.py", "lines": [3, 9]},
+        {"id": "file-b", "file": "b.py"}]), TOOLS)
     assert out.summary == "previous turn did t"
-    assert out.tool_calls == [ToolRequest("exec_shell", {"command": "ls"}),
-                              FileRequest("a.py", (3, 9)), FileRequest("b.py", None)]
+    assert out.tool_calls == [ToolRequest("exec_shell", {"command": "ls"}, "shell"),
+                              FileRequest("a.py", (3, 9), "file-a"), FileRequest("b.py", None, "file-b")]
 
 
 def test_model_identifiers_and_retrieval_parse() -> None:
@@ -45,10 +45,9 @@ def test_model_identifiers_and_retrieval_parse() -> None:
         RetrieveRequest(("source-v1", "tests-before"))]
 
 
-def test_identifier_is_optional_for_backward_compatibility() -> None:
-    out = parse(_reply(tool_calls=[{"tool": "exec_shell", "args": {}}]), TOOLS)
-    assert out.tool_calls == [ToolRequest("exec_shell", {})]
-    assert out.tool_calls[0].id is None
+def test_identifier_is_mandatory() -> None:
+    with pytest.raises(ProtocolError, match="requires id"):
+        parse(_reply(tool_calls=[{"tool": "exec_shell", "args": {}}]), TOOLS)
 
 
 def test_json_surrounded_by_text_is_accepted() -> None:
@@ -113,7 +112,7 @@ def test_turn_schema_has_summary_and_one_branch_per_tool() -> None:
     branches = js["properties"]["tool_calls"]["items"]["anyOf"]
     file_branch, tool_branch, retrieve_branch = branches
     assert file_branch["properties"]["id"]["type"] == "string"
-    assert tool_branch["required"] == ["tool", "args"]
+    assert tool_branch["required"] == ["id", "tool", "args"]
     assert tool_branch["properties"]["id"]["minLength"] == 1
     assert tool_branch["properties"]["tool"] == {"type": "string", "const": "exec_shell"}
     assert tool_branch["properties"]["args"]["additionalProperties"] is False
@@ -131,6 +130,6 @@ def test_check_args() -> None:
 
 def test_schema_shaped_reply_parses() -> None:
     reply = json.dumps({"summary": "s", "done": None,
-                        "tool_calls": [{"file": "a", "lines": None},
-                                       {"tool": "exec_shell", "args": {}}]})
-    assert parse(reply, TOOLS).tool_calls == [FileRequest("a", None), ToolRequest("exec_shell", {})]
+                        "tool_calls": [{"id": "f", "file": "a", "lines": None},
+                                       {"id": "x", "tool": "exec_shell", "args": {}}]})
+    assert parse(reply, TOOLS).tool_calls == [FileRequest("a", None, "f"), ToolRequest("exec_shell", {}, "x")]

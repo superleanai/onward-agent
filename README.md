@@ -47,7 +47,8 @@ Each model response is one JSON object:
 - `id` is a model-chosen string identifying a file or tool call. Results are headed `<id>`. The host
   retains the full result in a per-run store. `{"retrieve": "id"}` appends that full stored result
   without executing the tool again; a list of IDs is also accepted. IDs must be unique, and retrieval
-  of an unknown ID returns an error. The field remains optional so existing callers remain valid.
+  of an unknown ID returns an error. IDs are mandatory. Full results are stored on disk, not in RAM;
+only the small ID/path index stays in memory.
 - `done` is normally `null`. A string ends the run with that final answer; tool calls are then ignored.
 
 Malformed output and invalid tool calls produce appended error context. The model can correct itself
@@ -69,7 +70,7 @@ Cache hits are logged per turn as `usage.cached_tokens` when the provider report
 ## Implementation
 
 The `selfctx` package contains `_items.py` (append-only rendering), `_protocol.py` (system prompt,
-JSON schema, validation), `_loop.py` (turn execution), and `__main__.py` (CLI).
+JSON schema, validation), `_loop.py` (turn execution), and `_results.py` (disk-backed result store), and `__main__.py` (CLI).
 
 agentknit (`../agentknit`, editable path dependency) supplies only the model client and tools
 (`write_file`, `str_replace`, `exec_shell`; reads use file calls). No agentknit session runs, so its
@@ -101,7 +102,8 @@ empty task. Tool output is streamed to stderr; stdout carries only the answer. `
 the turn schema for endpoints without `json_schema`. The context budget is soft and informational;
 the host never truncates context.
 
-Each run writes `runs/<timestamp>.jsonl`, one record per turn: `turn`, `items_before`, `items_after`,
+Each run writes `runs/<timestamp>.jsonl` and `runs/<timestamp>.results/`. Result files contain the
+full JSON-encoded observations; `index.jsonl` maps IDs to files. Each turn record contains: `turn`, `items_before`, `items_after`,
 `summary`, `new_items` (kind, estimated tokens, and model-assigned ID when present), `usage` (`prompt_tokens`,
 `completion_tokens`, `cached_tokens`), `finish_reason`, `reply`, and `error` when the reply broke the
 protocol. On a protocol error, `summary` and `new_items` are absent.

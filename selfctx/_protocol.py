@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -15,14 +15,14 @@ class ProtocolError(ValueError):
 class FileRequest:
     path: str
     lines: tuple[int, int] | None  # 1-based, inclusive; None = agentknit's default read
-    id: str | None = None
+    id: str
 
 
 @dataclass(frozen=True)
 class ToolRequest:
     tool: str
-    args: dict[str, Any] = field(default_factory=dict)
-    id: str | None = None
+    args: dict[str, Any]
+    id: str
 
 
 @dataclass(frozen=True)
@@ -63,8 +63,8 @@ The raw replies, observations, and all summaries remain visible, so do not repea
 
 "tool_calls" is an ordered list. The host executes every call and appends its result before the
 next turn, in the order listed. Give every file or tool call a unique, descriptive "id" string of
-your choice. The result is headed `<your-id>` and stored durably, including when the visible result
-was shortened. Later, {{"retrieve": "your-id"}} appends that exact full stored result without
+your choice; it is mandatory. The result is headed `<your-id>` and stored on disk, including when
+the visible result was shortened. Later, {{"retrieve": "your-id"}} appends that exact full stored result without
 rerunning the tool. Use this when you need a past result again. Retrieval is not file editing or
 backtracking: it only appends a copy and never removes context.
 
@@ -119,8 +119,8 @@ def _request(raw: Any, tools: set[str]) -> Request:
             raise ProtocolError("retrieve must be an id or a non-empty list of id strings")
         return RetrieveRequest(tuple(ids))
     id_ = raw.get("id")
-    if id_ is not None and (not isinstance(id_, str) or not id_.strip()):
-        raise ProtocolError("id must be a non-empty string")
+    if not isinstance(id_, str) or not id_.strip():
+        raise ProtocolError("every file or tool call requires id, a non-empty string")
     if "file" in raw:
         path, lines = raw["file"], raw.get("lines")
         if not isinstance(path, str):
@@ -161,7 +161,7 @@ def _tool_branch(spec: dict[str, Any]) -> dict[str, Any]:
     """Schema of one tool call: the tool name as a constant and its own parameters."""
     params = spec["function"]["parameters"]
     args = {**params, "additionalProperties": False}
-    return {"type": "object", "additionalProperties": False, "required": ["tool", "args"],
+    return {"type": "object", "additionalProperties": False, "required": ["id", "tool", "args"],
             "properties": {"id": {"type": "string", "minLength": 1},
                            "tool": {"type": "string", "const": spec["function"]["name"]}, "args": args}}
 
@@ -171,7 +171,7 @@ def turn_schema(tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
 
     Endpoints may only follow it as an instruction (Kimi does), so `parse` and `check_args` still validate.
     """
-    file_call = {"type": "object", "additionalProperties": False, "required": ["file", "lines"],
+    file_call = {"type": "object", "additionalProperties": False, "required": ["id", "file", "lines"],
                  "properties": {"id": {"type": "string", "minLength": 1},
                                 "file": {"type": "string"},
                                 "lines": {"type": ["array", "null"], "minItems": 2, "maxItems": 2,

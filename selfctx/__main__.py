@@ -46,12 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     # file calls cover reads
     tool_specs: list[dict[str, Any]] = [s for s in specs if s["function"]["name"] != "read_file"]  # type: ignore[index]
     args.log_dir.mkdir(parents=True, exist_ok=True)
-    log = args.log_dir / f"{datetime.datetime.now():%Y%m%d-%H%M%S}.jsonl"
+    run_id = f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
+    log = args.log_dir / f"{run_id}.jsonl"
+    results_dir = args.log_dir / f"{run_id}.results"
     with contextlib.redirect_stdout(sys.stderr):  # tool output streams; stdout is for the answer
         result = run(task, client, schema.get("model", args.model), tool_specs, tool_dispatch,
                      request_params=dict(schema.get("request_params") or {}),
                      max_turns=args.max_turns, log_path=log, schema=not args.no_schema,
-                     context_budget=args.context_budget)
+                     context_budget=args.context_budget, results_dir=results_dir)
     if args.json:
         print(json.dumps({"final": result.final, "turns": result.turns,
                           "items": len(result.items), "log": str(log)}))

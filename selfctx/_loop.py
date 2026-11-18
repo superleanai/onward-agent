@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -21,6 +23,7 @@ from ._protocol import (
     response_format,
     system_prompt,
 )
+from ._results import ResultStore
 
 _ECHOED_TAGS = re.compile(r"\A\s*(?:\[context\] [^\n{]*\n)+")
 _ENVELOPE = re.compile(r"\A<[0-9a-f]{8}[^>]*>\n?(.*?)</[0-9a-f]{8}>\s*\Z", re.DOTALL)
@@ -66,20 +69,20 @@ def _read(req: FileRequest, tool_dispatch: dict[str, Any]) -> Item:
 
 
 def _execute(req: Request, tool_dispatch: dict[str, Any], specs: dict[str, dict[str, Any]],
-             results: dict[str, Item]) -> Item:
+             results: ResultStore) -> Item:
     if isinstance(req, RetrieveRequest):
+        retrieved = [(id_, results.get(id_)) for id_ in req.ids]
         content = "\n\n".join(
-            results[id_].content if id_ in results else f"unknown tool-call id {id_!r}"
-            for id_ in req.ids)
+            item.content if item is not None else f"unknown tool-call id {id_!r}"
+            for id_, item in retrieved)
         kind: Literal["error", "tool_result"] = (
-            "error" if any(id_ not in results for id_ in req.ids) else "tool_result")
+            "error" if any(item is None for _, item in retrieved) else "tool_result")
         return Item(kind, content)
-    if req.id is not None and req.id in results:
+    if req.id in results.paths:
         return Item("error", f"<{req.id}>\nnot run: duplicate tool-call id {req.id!r}")
     result = _read(req, tool_dispatch) if isinstance(req, FileRequest) else _run_tool(req, tool_dispatch, specs)
-    if req.id is not None:
-        result = Item(result.kind, f"<{req.id}>\n{result.content}")
-        results[req.id] = result
+    result = Item(result.kind, f"<{req.id}>\n{result.content}")
+    results.put(req.id, result)
     return result
 
 
@@ -109,7 +112,8 @@ def _usage(response: Any) -> dict[str, Any] | None:
 def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         tool_dispatch: dict[str, Any], *, request_params: dict[str, Any] | None = None,
         max_turns: int = 50, log_path: Path | None = None, schema: bool = True,
-        max_item_chars: int = 30_000, context_budget: int | None = None) -> Result:
+        max_item_chars: int = 30_000, context_budget: int | None = None,
+        results_dir: Path | None = None) -> Result:
     """Run `task` until the model sets `done` or `max_turns` is reached.
 
     Every valid model reply is appended verbatim, making its `summary` durable.
@@ -119,7 +123,9 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
     tools = set(specs)
     system = system_prompt(tool_specs)
     items = [Item("task", task)]
-    results: dict[str, Item] = {}  # full, uncapped results keyed by model-supplied id
+    if results_dir is None:
+        results_dir = Path(tempfile.gettempdir()) / f"selfctx-results-{uuid.uuid4().hex}"
+    results = ResultStore(results_dir)  # full results on disk; only ID/path index in RAM
     params = dict(request_params or {})
     if schema:
         params["extra_body"] = {**params.get("extra_body", {}), "response_format": response_format(tool_specs)}
