@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+*.egg-info/
+runs/
+plan-*.md
+bench/results*/*/testbed/
+bench/results*/*/eval/logs/
+bench/validate/logs/
+bench/results.err
+bench/results-run3.err
+bench/results-cachecheck.err

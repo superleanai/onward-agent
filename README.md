@@ -1,0 +1,110 @@
+# selfctx2
+
+A coding agent with a monotonic, append-only context loop. At every turn the model writes a durable
+summary of the previous turn and an ordered list of structured tool calls. There are no numbered
+context items, no context truncation, and no backtracking.
+Related work is surveyed in [PRIOR-ART.md](PRIOR-ART.md).
+
+## Context model
+
+- The task is the first message after the system prompt.
+- Every later model reply, file excerpt, tool result, and error is appended in chronological order.
+  Nothing already in the context is edited, removed, or reordered.
+- A model reply contains a `summary`; the complete reply is appended verbatim, so every summary is
+  durable context available on all later turns. The summary is also recorded separately in the run log.
+- The first turn has no previous turn to summarize. Its summary records the model's initial
+  understanding and approach instead.
+- Tool calls do not have hidden results: their outputs are appended before the next turn. A summary
+  therefore reports outcomes from the previous turn, not outcomes of calls being requested now.
+
+## Turn protocol
+
+Each model response is one JSON object:
+
+```json
+{
+  "summary": "What the previous turn established or changed, and the resulting next step",
+  "tool_calls": [
+    {"file": "path/to/file.py", "lines": [10, 40]},
+    {"tool": "exec_shell", "args": {"command": "pytest -q"}}
+  ],
+  "done": null
+}
+```
+
+- `summary` is a required, non-empty string. It should preserve exact facts needed later without
+  unnecessarily repeating observations that remain in context.
+- `tool_calls` is an ordered list of file excerpts and tool calls. The host executes all of them and
+  appends one result per call in the listed order. A file call's line range is 1-based and inclusive;
+  `"lines": null` uses the default read length. File calls also register reads required by edit tools.
+- `done` is normally `null`. A string ends the run with that final answer; tool calls are then ignored.
+
+Malformed output and invalid tool calls produce appended error context. The model can correct itself
+on a later turn, but no operation can remove or rewrite earlier context.
+
+## Caching awareness
+
+The request is cache-friendly by construction:
+
+- The system prompt and structured-output schema are constant across turns.
+- One chat message is used per task, model reply, file excerpt, tool result, or error. Once sent,
+  every such message remains byte-identical.
+- New entries are appended at the end. There is no cut or rewrite that could invalidate an earlier
+  prompt-cache prefix.
+- The changing context-size reminder and turn instruction are in the final message only.
+
+Cache hits are logged per turn as `usage.cached_tokens` when the provider reports them.
+
+## Implementation
+
+The `selfctx` package contains `_items.py` (append-only rendering), `_protocol.py` (system prompt,
+JSON schema, validation), `_loop.py` (turn execution), and `__main__.py` (CLI).
+
+agentknit (`../agentknit`, editable path dependency) supplies only the model client and tools
+(`write_file`, `str_replace`, `exec_shell`; reads use file calls). No agentknit session runs, so its
+compaction and awareness features do not alter this loop.
+
+Each request carries the constant turn schema as `response_format: json_schema`, with the argument
+schema of each available tool. Replies and tool arguments are also validated by the host because an
+endpoint may accept a schema without enforcing it during decoding. Tool outputs longer than 30,000
+characters keep their head and tail.
+
+## Install
+
+```sh
+uv venv .venv && uv pip install -p .venv -e '.[dev]'
+```
+
+## Usage
+
+```sh
+selfctx "make the tests pass"            # prints the final answer
+selfctx --json "make the tests pass"     # {"final", "turns", "items", "log"}
+echo "task" | selfctx
+selfctx --model k3.1-pro --inference-db kimi-coding --max-turns 50 --context-budget 20000 --log-dir runs "task"
+```
+
+Defaults: Kimi K3.1 Pro through agentknit's inference-db entry `kimi-coding`.
+Exit code 0 means the model set `done`; 1 means `--max-turns` elapsed without an answer; 2 means an
+empty task. Tool output is streamed to stderr; stdout carries only the answer. `--no-schema` omits
+the turn schema for endpoints without `json_schema`. The context budget is soft and informational;
+the host never truncates context.
+
+Each run writes `runs/<timestamp>.jsonl`, one record per turn: `turn`, `items_before`, `items_after`,
+`summary`, `new_items` (kind and estimated tokens of each observation), `usage` (`prompt_tokens`,
+`completion_tokens`, `cached_tokens`), `finish_reason`, `reply`, and `error` when the reply broke the
+protocol. On a protocol error, `summary` and `new_items` are absent.
+
+```sh
+jq -c '{turn, summary, items_before, items_after, cached: .usage.cached_tokens}' runs/*.jsonl
+```
+
+## Development
+
+```sh
+.venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy selfctx
+```
+
+The tests use a scripted fake model. They cover required summaries, structured tool-call validation,
+chronological execution, error recovery, completion, and byte-identical cached prefixes across turns.
+`tests/fixtures/buggy/` is a small project with failing tests for live runs.

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "selfctx"
+version = "0.1.0"
+description = "Monotonic coding agent with durable per-turn summaries and structured tool calls."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["agentknit[keyring]"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "mypy", "ruff"]
+
+[project.scripts]
+selfctx = "selfctx.__main__:main"
+
+[tool.uv.sources]
+agentknit = { path = "../agentknit", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["selfctx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixtures"]
+
+[tool.ruff]
+line-length = 110
+extend-exclude = ["tests/fixtures", "probes"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
