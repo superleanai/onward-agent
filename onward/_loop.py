@@ -113,25 +113,28 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         tool_dispatch: dict[str, Any], *, request_params: dict[str, Any] | None = None,
         max_turns: int = 50, log_path: Path | None = None, schema: bool = True,
         max_item_chars: int = 30_000, context_budget: int | None = None,
-        results_dir: Path | None = None) -> Result:
+        results_dir: Path | None = None, items: list[Item] | None = None,
+        results: ResultStore | None = None, start_turn: int = 1) -> Result:
     """Run `task` until the model sets `done` or `max_turns` is reached.
 
     Every valid model reply is appended verbatim, making its `summary` durable.
     `schema` sends the turn schema as `response_format` (the endpoint must accept `json_schema`).
+    Existing `items`, `results`, and `start_turn` let a REPL continue one conversation.
     """
     specs = {t["function"]["name"]: t for t in tool_specs}
     tools = set(specs)
     system = system_prompt(tool_specs)
-    items = [Item("task", task)]
-    if results_dir is None:
-        results_dir = Path(tempfile.gettempdir()) / f"onward-results-{uuid.uuid4().hex}"
-    results = ResultStore(results_dir)  # full results on disk; only ID/path index in RAM
+    items = (items or []) + [Item("task", task)]
+    if results is None:
+        if results_dir is None:
+            results_dir = Path(tempfile.gettempdir()) / f"onward-results-{uuid.uuid4().hex}"
+        results = ResultStore(results_dir)  # full results on disk; only ID/path index in RAM
     params = dict(request_params or {})
     if schema:
         params["extra_body"] = {**params.get("extra_body", {}), "response_format": response_format(tool_specs)}
     log = log_path.open("a") if log_path else None
     try:
-        for turn in range(1, max_turns + 1):
+        for turn in range(start_turn, start_turn + max_turns):
             response = client.chat.completions.create(
                 model=model, messages=render(items, system, context_budget), **params)
             reply = _ECHOED_TAGS.sub("", response.choices[0].message.content or "")
@@ -163,7 +166,7 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
             if log:
                 log.write(json.dumps(record) + "\n")
                 log.flush()
-        return Result(None, items, max_turns)
+        return Result(None, items, start_turn + max_turns - 1)
     finally:
         if log:
             log.close()

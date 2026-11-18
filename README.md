@@ -13,8 +13,9 @@ Related work is surveyed in [PRIOR-ART.md](PRIOR-ART.md).
 
 ## Context model
 
-- The task is the first message after the system prompt. Model replies, observations, and errors are
-  appended chronologically and never edited, removed, or reordered.
+- The first task is the first message after the system prompt. In the REPL, later tasks are appended
+  to the same conversation. Model replies, observations, and errors are appended chronologically and
+  never edited, removed, or reordered.
 - A model reply contains a `summary`; the complete reply is appended verbatim, so every summary is
   durable context available on all later turns. The summary is also recorded separately in the run log.
 - The first turn has no previous turn to summarize. Its summary records the model's initial
@@ -71,7 +72,8 @@ Cache hits are logged per turn as `usage.cached_tokens` when the provider report
 ## Implementation
 
 The `onward` package contains `_items.py` (append-only rendering), `_protocol.py` (system prompt,
-JSON schema, validation), `_loop.py` (turn execution), and `_results.py` (disk-backed result store), and `__main__.py` (CLI).
+JSON schema, validation), `_loop.py` (turn execution), `_results.py` (disk-backed result store),
+`_repl.py` (interactive input), and `__main__.py` (CLI).
 
 agentknit (`../agentknit`, editable path dependency) supplies only the model client and tools
 (`write_file`, `str_replace`, `exec_shell`; reads use file calls). No agentknit session runs, so its
@@ -91,19 +93,26 @@ uv venv .venv && uv pip install -p .venv -e '.[dev]'
 ## Usage
 
 ```sh
-onward "make the tests pass"            # prints the final answer
+onward                                  # REPL when stdin is a terminal
+onward "make the tests pass"            # one-shot: prints the final answer
 onward --json "make the tests pass"     # {"final", "turns", "items", "log"}
-echo "task" | onward
+echo "task" | onward                    # piped stdin remains one-shot
 onward --model k3.1-pro --inference-db kimi-coding --max-turns 50 --context-budget 20000 --log-dir runs "task"
 ```
 
+With no arguments on a terminal, Onward starts a REPL. Each prompt runs a task in the same
+append-only conversation, preserving prior context and tool-result IDs. Enter `exit`, `quit`, `q`,
+or Ctrl-D to quit; blank input is ignored. `--max-turns` is per task. In JSON mode, each answer is a
+separate JSON document; prompts and diagnostics stay on stderr.
+
 Defaults: Kimi K3.1 Pro through agentknit's inference-db entry `kimi-coding`.
-Exit code 0 means the model set `done`; 1 means `--max-turns` elapsed without an answer; 2 means an
+In one-shot mode, exit code 0 means the model set `done`; 1 means `--max-turns` elapsed without an answer; 2 means an
 empty task. Tool output is streamed to stderr; stdout carries only the answer. `--no-schema` omits
 the turn schema for endpoints without `json_schema`. The context budget is soft and informational;
 the host never truncates context.
 
-Each run writes `runs/<timestamp>.jsonl` and `runs/<timestamp>.results/`. Result files contain the
+Each invocation writes `runs/<timestamp>.jsonl` and `runs/<timestamp>.results/`, shared by all tasks
+in a REPL. Result files contain the
 full JSON-encoded observations; `index.jsonl` maps IDs to files. Each turn record contains: `turn`, `items_before`, `items_after`,
 `summary`, `new_items` (kind, estimated tokens, and model-assigned ID when present), `usage` (`prompt_tokens`,
 `completion_tokens`, `cached_tokens`), `finish_reason`, `reply`, and `error` when the reply broke the
