@@ -1,4 +1,4 @@
-# selfctx2
+# Onward
 
 A coding agent with a monotonic, append-only context loop.
 
@@ -6,8 +6,8 @@ Core concept: at every turn the model writes a durable summary of the previous t
 list of structured tool calls. Model-assigned tool-call IDs make every stored result addressable and
 retrievable without rerunning the tool.
 
-This differs from traditional coding agents, which keep everything in the context, and from selfctx,
-whose numbered context can be truncated and backtracked.
+This differs from traditional coding agents, which keep everything in the context, and from its
+predecessor selfctx, whose numbered context can be truncated and backtracked.
 
 Related work is surveyed in [PRIOR-ART.md](PRIOR-ART.md).
 
@@ -70,7 +70,7 @@ Cache hits are logged per turn as `usage.cached_tokens` when the provider report
 
 ## Implementation
 
-The `selfctx` package contains `_items.py` (append-only rendering), `_protocol.py` (system prompt,
+The `onward` package contains `_items.py` (append-only rendering), `_protocol.py` (system prompt,
 JSON schema, validation), `_loop.py` (turn execution), and `_results.py` (disk-backed result store), and `__main__.py` (CLI).
 
 agentknit (`../agentknit`, editable path dependency) supplies only the model client and tools
@@ -91,10 +91,10 @@ uv venv .venv && uv pip install -p .venv -e '.[dev]'
 ## Usage
 
 ```sh
-selfctx "make the tests pass"            # prints the final answer
-selfctx --json "make the tests pass"     # {"final", "turns", "items", "log"}
-echo "task" | selfctx
-selfctx --model k3.1-pro --inference-db kimi-coding --max-turns 50 --context-budget 20000 --log-dir runs "task"
+onward "make the tests pass"            # prints the final answer
+onward --json "make the tests pass"     # {"final", "turns", "items", "log"}
+echo "task" | onward
+onward --model k3.1-pro --inference-db kimi-coding --max-turns 50 --context-budget 20000 --log-dir runs "task"
 ```
 
 Defaults: Kimi K3.1 Pro through agentknit's inference-db entry `kimi-coding`.
@@ -116,7 +116,7 @@ jq -c '{turn, summary, items_before, items_after, cached: .usage.cached_tokens}'
 ## Development
 
 ```sh
-.venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy selfctx
+.venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy onward
 ```
 
 The tests use a scripted fake model. They cover required summaries, structured tool-call validation,

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from selfctx._protocol import (
+from onward._protocol import (
     FileRequest,
     ProtocolError,
     RetrieveRequest,

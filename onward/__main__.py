@@ -1,4 +1,4 @@
-"""selfctx: run a coding task with durable summaries and structured tool calls."""
+"""onward: run a coding task with durable summaries and structured tool calls."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="selfctx", description=__doc__)
+    parser = argparse.ArgumentParser(prog="onward", description=__doc__)
     parser.add_argument("task", nargs="?", help="the task (read from stdin when omitted)")
     parser.add_argument("--model", default="k3.1-pro", help="agentknit model name (default: %(default)s)")
     parser.add_argument("--inference-db", default="kimi-coding",
@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     task = args.task if args.task is not None else sys.stdin.read()
     if not task.strip():
-        print("selfctx: empty task", file=sys.stderr)
+        print("onward: empty task", file=sys.stderr)
         return 2
 
     import agentknit
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     elif result.final is not None:
         print(result.final)
     else:
-        print(f"selfctx: no answer after {result.turns} turns; log: {log}", file=sys.stderr)
+        print(f"onward: no answer after {result.turns} turns; log: {log}", file=sys.stderr)
     return 0 if result.final is not None else 1
 
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from selfctx._items import Item
-from selfctx._results import ResultStore
+from onward._items import Item
+from onward._results import ResultStore
 
 
 def test_results_are_on_disk_and_retrievable(tmp_path: Path) -> None:

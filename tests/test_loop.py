@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from agentknit import default_tool_spec
 
-from selfctx._loop import run
+from onward._loop import run
 
 
 class Scripted:

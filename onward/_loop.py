@@ -124,7 +124,7 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
     system = system_prompt(tool_specs)
     items = [Item("task", task)]
     if results_dir is None:
-        results_dir = Path(tempfile.gettempdir()) / f"selfctx-results-{uuid.uuid4().hex}"
+        results_dir = Path(tempfile.gettempdir()) / f"onward-results-{uuid.uuid4().hex}"
     results = ResultStore(results_dir)  # full results on disk; only ID/path index in RAM
     params = dict(request_params or {})
     if schema:
