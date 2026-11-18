@@ -1,6 +1,6 @@
 # Onward
 
-A coding agent with a monotonic, append-only context loop.
+A coding agent with a cache-aware, self-summarizing context loop.
 
 Core concept: at every turn the model writes a durable summary of the previous turn and an ordered
 list of structured tool calls. Model-assigned tool-call IDs make every stored result addressable and
