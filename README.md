@@ -115,8 +115,9 @@ jq -c '{turn, items_before, items_after, prompt: .usage.prompt_tokens, cached: .
 
 With `--trace-context`, every logged turn includes the exact `messages` passed to the model client.
 Open [the context viewer](tools/context-viewer.html) in a browser and select that run's JSONL file.
-Move through the model requests to see additions, replacements, and the unchanged prefix. Expand
-any entry to read its content. Recorded prompts can include source code and tool output.
+The timeline alternates between requests and responses. Request steps show additions, replacements,
+and the unchanged prefix. Response steps show the raw model reply. Select a changed entry to compare
+its exact text before and after. Recorded prompts can include source code and tool output.
 
 ## Development
 

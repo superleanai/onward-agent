@@ -1,218 +1,593 @@
-<div id="onward-context-viewer">
-  <h2>Onward context trace</h2>
-  <label class="form-label trace-file">
-    Open a context trace (.jsonl)
-    <input class="form-control" type="file" accept=".jsonl,application/json,text/plain">
-  </label>
-  <p class="text-destructive" role="alert" hidden></p>
-  <section class="trace-run" hidden>
-    <label class="form-label trace-turn">
-      <span>Model request <output class="tabular-nums"></output></span>
-      <input class="form-range" type="range" min="1" value="1">
-    </label>
-    <div class="trace-measure" role="img">
-      <span class="trace-prefix"></span>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Context trace · Onward</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101312;
+      --panel: #171b19;
+      --inset: #121614;
+      --line: #2b342e;
+      --text: #eff3ed;
+      --muted: #a6b2a8;
+      --accent: #dcf887;
+      --prefix: #779852;
+      --suffix: #3a463d;
+      --added: #a1e2c3;
+      --replaced: #eed392;
+      --removed: #f5a99e;
+      --sans: "Inter", system-ui, sans-serif;
+      --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      font: 15px/1.5 var(--sans);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:not(:disabled), .file-button { cursor: pointer; }
+    button:disabled { opacity: .35; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    h1, h2, h3, p { margin: 0; }
+    .frame { width: min(1320px, 100% - 88px); margin-inline: auto; }
+    .sr-only, .file-picker {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip-path: inset(50%); white-space: nowrap;
+    }
+    .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+    .masthead { border-bottom: 1px solid var(--line); }
+    .masthead .frame {
+      min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.03em; }
+    .brand-mark {
+      display: grid; gap: 3px; align-content: center; width: 27px; height: 27px;
+      padding-inline: 6px; border: 1px solid #a8bf6b; border-radius: 8px;
+    }
+    .brand-mark i { display: block; background: var(--accent); height: 2px; border-radius: 2px; }
+    .brand-mark i:nth-child(2) { width: 76%; }
+    .brand-mark i:nth-child(3) { width: 48%; }
+    .file-button, .step {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+    }
+    .file-button { min-height: 38px; padding: 0 13px; font-weight: 600; font-size: .84rem; }
+    .file-picker:focus-visible + .file-button { outline: 2px solid var(--accent); outline-offset: 4px; }
+    .file-button:hover, .step:hover:not(:disabled) { background: var(--suffix); border-color: var(--muted); }
+
+    main.frame { padding-block: 36px 52px; }
+    .intro { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin-bottom: 25px; }
+    h1 { font-weight: 650; font-size: clamp(2.4rem, 5vw, 4.2rem); line-height: 1; letter-spacing: -.075em; }
+    .run-label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; color: var(--muted); }
+    .run-label span + span::before { content: "·"; margin-right: 8px; color: var(--prefix); }
+    .run-result {
+      color: var(--accent); border: 1px solid #425136; background: #222c20;
+      padding: 7px 11px; border-radius: 8px; font-size: .84rem; white-space: nowrap;
+    }
+    .run-result::before { content: "✓"; margin-right: 7px; }
+    .notice { padding: 16px; margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; }
+    [role="alert"] { color: var(--removed); }
+
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 15px; }
+    .timeline { padding: 17px 21px 13px; margin-bottom: 16px; }
+    .timeline-head, .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .timeline h2, .section-head h2 { font-size: 1.04rem; font-weight: 650; letter-spacing: -.02em; }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: .78rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .legend i { width: 8px; height: 8px; border-radius: 2px; background: var(--prefix); }
+    .legend .suffix-key { background: var(--suffix); }
+    .legend .reply-key { transform: rotate(45deg); background: var(--muted); }
+    .chart-scroll { overflow-x: auto; margin-top: 10px; scrollbar-color: var(--suffix) transparent; }
+    .turn-chart {
+      position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(34px, 1fr); gap: 3px;
+      background: linear-gradient(to top, var(--line) 1px, transparent 1px) 0 0 / 100% 23px;
+    }
+    .turn-pair {
+      display: grid; grid-template-columns: minmax(15px, 1fr) minmax(11px, .65fr);
+      grid-template-rows: 62px 21px; gap: 3px 1px; padding: 3px; min-width: 0;
+    }
+    .turn-pair.is-current { background: #2b3825; border-radius: 6px; }
+    .turn-pair .turn-number { grid-column: 1 / -1; text-align: center; color: var(--muted); font-size: .71rem; }
+    .turn-pair.is-current .turn-number { color: var(--accent); font-weight: 700; }
+    .turn-point {
+      display: flex; align-items: end; justify-content: center; min-width: 0;
+      border: 0; border-radius: 4px; background: transparent; padding: 0 1px;
+    }
+    .turn-point:hover { background: #303c32; }
+    .turn-point:focus-visible { outline-offset: 0; }
+    .stack {
+      display: flex; flex-direction: column-reverse; width: min(20px, 100%); overflow: hidden;
+      background: var(--suffix); border-radius: 4px 4px 1px 1px;
+    }
+    .stack > span { background: var(--prefix); }
+    .turn-point[aria-pressed="true"] .stack { background: #748454; }
+    .turn-point[aria-pressed="true"] .stack > span { background: var(--accent); }
+    .response-point { align-items: center; }
+    .response-point span { width: 6px; height: 6px; transform: rotate(45deg); border-radius: 1px; background: var(--muted); }
+    .response-point[aria-pressed="true"] span { background: var(--accent); }
+    .scrubber {
+      display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center;
+      margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line);
+    }
+    .scrubber output { color: var(--accent); font-size: .83rem; font-weight: 600; }
+    .scrubber .step-count { font-size: .75rem; color: var(--muted); white-space: nowrap; }
+    .scrubber input { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent); }
+    .scrubber .turn-nav { grid-column: 1; }
+
+    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 16px; }
+    .metric { margin: 0; padding: 12px 18px 13px; min-width: 0; }
+    .metric + .metric { border-left: 1px solid var(--line); }
+    .metric dt { color: var(--muted); font-size: .79rem; }
+    .metric dd { margin: 1px 0 0; }
+    .metric output { font-size: clamp(1.06rem, 2.5vw, 1.65rem); font-weight: 550; letter-spacing: -.067em; }
+    .metric small { color: var(--muted); margin-left: 6px; font-size: .74rem; }
+    #prefix-size { color: var(--accent); }
+
+    .workspace { display: grid; grid-template-columns: minmax(265px, .86fr) minmax(0, 2fr); gap: 16px; }
+    .message-list, .inspector { min-width: 0; }
+    .section-head { padding: 13px 15px; border-bottom: 1px solid var(--line); min-height: 59px; }
+    .turn-nav { display: flex; align-items: center; gap: 7px; }
+    .turn-nav output { white-space: nowrap; }
+    .step { width: 30px; height: 30px; font-size: .98rem; line-height: 1; background: var(--inset); }
+    .mode {
+      display: flex; gap: 3px; margin: 11px 12px; padding: 3px;
+      background: var(--inset); border: 1px solid var(--line); border-radius: 8px;
+    }
+    .mode button {
+      flex: 1; border: 0; padding: 6px 9px; border-radius: 5px; background: transparent;
+      color: var(--muted); font-size: .83rem; font-weight: 600;
+    }
+    .mode button:hover { color: var(--text); }
+    .mode button[aria-pressed="true"] { background: #303b31; color: var(--text); }
+    .message-rows { display: grid; gap: 3px; padding: 0 10px 11px; max-height: 516px; overflow: auto; }
+    .message-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 8px; text-align: left;
+      width: 100%; padding: 8px 9px; border: 1px solid transparent;
+      border-radius: 8px; background: transparent; min-height: 48px;
+    }
+    .message-row:hover { background: var(--inset); }
+    .message-row[aria-pressed="true"] { border-color: #4d6140; background: #222e23; }
+    .message-title, .message-role { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .message-title { font-weight: 590; font-size: .87rem; }
+    .message-role { color: var(--muted); grid-column: 1; font-size: .74rem; }
+    .status {
+      align-self: start; width: max-content; padding: 1px 6px;
+      border-radius: 5px; font-size: .7rem; line-height: 1.6; color: var(--muted); background: #28302a;
+    }
+    .status[data-kind="added"] { color: var(--added); background: #20382d; }
+    .status[data-kind="replaced"] { color: var(--replaced); background: #3b3423; }
+    .status[data-kind="removed"] { color: var(--removed); background: #432923; }
+
+    .inspector .section-head h2 { min-width: 0; overflow-wrap: anywhere; }
+    .inspector-detail { padding: 12px 15px 15px; }
+    .detail-meta { color: var(--muted); font-size: .78rem; margin-bottom: 9px; overflow-wrap: anywhere; }
+    .versions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
+    .versions.dual { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .code-pane { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--inset); }
+    .code-head {
+      padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap;
+      justify-content: space-between; align-items: center; gap: 4px 8px; font-size: .77rem;
+    }
+    .code-head strong { font-weight: 650; }
+    .code-head small { color: var(--muted); font-size: .71rem; }
+    .code-pane pre {
+      margin: 0; padding: 10px 11px 13px; max-height: 395px; overflow: auto;
+      white-space: pre-wrap; overflow-wrap: anywhere; font: .8rem/1.65 var(--mono);
+      scrollbar-color: var(--suffix) transparent;
+    }
+    .placeholder-code { color: var(--replaced); }
+
+    @media (max-width: 880px) {
+      .frame { width: calc(100% - 36px); }
+      .workspace { grid-template-columns: minmax(215px, .85fr) minmax(0, 1.5fr); }
+      .versions.dual { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .frame { width: calc(100% - 28px); }
+      .masthead .frame { min-height: 58px; }
+      main.frame { padding-block: 26px 32px; }
+      .intro { align-items: start; flex-direction: column; margin-bottom: 16px; }
+      h1 { font-size: 2.65rem; }
+      .timeline { padding-inline: 12px; }
+      .timeline-head { align-items: start; flex-direction: column; gap: 5px; }
+      .scrubber { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+      .scrubber .step-count { grid-area: 1 / 2; }
+      .scrubber input { grid-column: 1 / -1; }
+      .metric { padding-inline: 8px; }
+      .metric small { display: block; margin: 0; }
+      .workspace { grid-template-columns: minmax(0, 1fr); }
+      .message-rows { max-height: 214px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="frame">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Onward</div>
+      <input class="file-picker" id="trace-file" type="file" accept=".jsonl,application/json,text/plain">
+      <label for="trace-file" class="file-button">Open trace</label>
     </div>
-    <p class="trace-measure-label tabular-nums" aria-live="polite"></p>
-    <p class="trace-usage text-small"></p>
-    <label class="form-check">
-      <input class="form-check-input" type="checkbox">
-      Show unchanged messages
-    </label>
-    <div class="trace-entries"></div>
-  </section>
-</div>
-<style>
-  #onward-context-viewer {
-    --trace-gap: var(--font-size-base, 1rem);
-    display: grid;
-    gap: var(--trace-gap);
-    color: var(--foreground, CanvasText);
-  }
-  #onward-context-viewer h2 { margin: 0; }
-  #onward-context-viewer .trace-run:not([hidden]) { display: grid; gap: calc(var(--trace-gap) * .5); }
-  #onward-context-viewer .trace-turn { display: grid; gap: calc(var(--trace-gap) * .25); }
-  #onward-context-viewer p { margin: 0; }
-  #onward-context-viewer .trace-measure {
-    display: flex;
-    height: calc(var(--trace-gap) * .5);
-    overflow: hidden;
-    background: var(--muted, color-mix(in srgb, CanvasText 12%, Canvas));
-    border-radius: calc(var(--trace-gap) * .25);
-  }
-  #onward-context-viewer .trace-prefix { background: var(--viz-series-1, Highlight); }
-  #onward-context-viewer details { margin-top: calc(var(--trace-gap) * .5); }
-  #onward-context-viewer summary, #onward-context-viewer pre { overflow-wrap: anywhere; }
-  #onward-context-viewer pre { white-space: pre-wrap; }
-  #onward-context-viewer .trace-body { padding-inline-start: var(--trace-gap); }
-  #onward-context-viewer[data-standalone] { color-scheme: light dark; font-family: system-ui, sans-serif; }
-  #onward-context-viewer[data-standalone] .trace-file input { display: block; margin-block-start: .35em; }
-  body:has(#onward-context-viewer[data-standalone]) { max-width: 60rem; margin: 2rem auto; padding-inline: 1rem; }
-</style>
-<script type="application/json" id="onward-embedded-trace">[]</script>
-<script>
-  (() => {
-    const root = document.getElementById('onward-context-viewer');
-    const file = root.querySelector('input[type=file]');
-    const alert = root.querySelector('[role=alert]');
-    const run = root.querySelector('.trace-run');
-    const slider = root.querySelector('input[type=range]');
-    const output = root.querySelector('output');
-    const includeUnchanged = root.querySelector('input[type=checkbox]');
-    const entries = root.querySelector('.trace-entries');
-    const prefixBar = root.querySelector('.trace-prefix');
-    const measure = root.querySelector('.trace-measure');
-    const measureLabel = root.querySelector('.trace-measure-label');
-    const usageLabel = root.querySelector('.trace-usage');
-    const format = Intl.NumberFormat();
-    let turns = [];
-    if (!window.openai) root.dataset.standalone = '';
+  </header>
+  <main class="frame">
+    <div class="intro">
+      <div>
+        <h1>Context trace</h1>
+        <p class="run-label" id="run-label" hidden></p>
+      </div>
+      <p class="run-result" id="run-result" hidden></p>
+    </div>
+    <p class="notice" id="empty-state">Open a JSONL trace recorded with <code>--trace-context</code>.</p>
+    <p class="notice" role="alert" hidden></p>
+    <div id="trace-run" hidden>
+      <section class="timeline panel" aria-labelledby="timeline-title">
+        <div class="timeline-head">
+          <h2 id="timeline-title">Run timeline</h2>
+          <div class="legend">
+            <span><i aria-hidden="true"></i>Unchanged prefix</span>
+            <span><i class="suffix-key" aria-hidden="true"></i>Rest of request</span>
+            <span><i class="reply-key" aria-hidden="true"></i>Response</span>
+          </div>
+        </div>
+        <div class="chart-scroll"><div class="turn-chart" role="group" aria-label="Select a request or response"></div></div>
+        <div class="scrubber">
+          <div class="turn-nav">
+            <button type="button" class="step" id="prev" aria-label="Previous step">←</button>
+            <output id="current-turn" class="mono" aria-live="polite"></output>
+            <button type="button" class="step" id="next" aria-label="Next step">→</button>
+          </div>
+          <input type="range" id="trace-step" min="1" value="1" aria-label="Timeline step">
+          <span class="step-count mono" id="step-count"></span>
+        </div>
+      </section>
+      <dl class="metrics panel">
+        <div class="metric"><dt>Prompt size</dt><dd><output class="mono" id="prompt-size"></output><small>characters</small></dd></div>
+        <div class="metric"><dt>Unchanged prefix</dt><dd><output class="mono" id="prefix-size"></output><small id="prefix-share"></small></dd></div>
+        <div class="metric"><dt>Backend input tokens</dt><dd><output class="mono" id="backend-input"></output><small id="backend-cache"></small></dd></div>
+      </dl>
+      <div class="workspace">
+        <section class="message-list panel" aria-labelledby="messages-title">
+          <div class="section-head">
+            <h2 id="messages-title">Messages</h2>
+          </div>
+          <div class="mode" role="group" aria-label="Message view">
+            <button type="button" id="changes" aria-pressed="true">Changes</button>
+            <button type="button" id="full-prompt" aria-pressed="false">Full prompt</button>
+          </div>
+          <div class="message-rows" role="group" aria-label="Select a message"></div>
+        </section>
+        <section class="inspector panel" aria-labelledby="detail-title">
+          <div class="section-head">
+            <h2 id="detail-title"></h2>
+            <span class="status" id="detail-status"></span>
+          </div>
+          <div class="inspector-detail">
+            <p class="detail-meta mono"></p>
+            <div class="versions"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script type="application/json" id="onward-embedded-trace">[]</script>
+  <script type="application/json" id="onward-run-metadata">{}</script>
+  <script>
+    (() => {
+      const $ = selector => document.querySelector(selector);
+      const format = new Intl.NumberFormat();
+      const chart = $('.turn-chart');
+      const rows = $('.message-rows');
+      const versions = $('.versions');
+      const alert = $('[role="alert"]');
+      const file = $('#trace-file');
+      const previous = $('#prev');
+      const next = $('#next');
+      const slider = $('#trace-step');
+      const changes = $('#changes');
+      const fullPrompt = $('#full-prompt');
+      let turns = [];
+      let active = 0;
+      let mode = 'changes';
+      let selected = '';
+      let visible = [];
 
-    function validTurn(turn) {
-      return Number.isInteger(turn?.turn) && Array.isArray(turn.messages) && turn.messages.length > 0
-        && turn.messages.every(message => typeof message?.role === 'string' && typeof message.content === 'string');
-    }
+      const titleCase = value => value.slice(0, 1).toUpperCase() + value.slice(1);
+      const count = content => [...content].length;
+      const equal = (before, after) => before?.role === after?.role && before?.content === after?.content;
 
-    function equal(before, after) {
-      return before?.role === after?.role && before?.content === after?.content;
-    }
+      function validTurn(turn) {
+        return Number.isInteger(turn?.turn) && Array.isArray(turn.messages) && turn.messages.length > 0
+          && turn.messages.every(message => typeof message?.role === 'string' && typeof message.content === 'string');
+      }
 
-    function characterCount(messages) {
-      return messages.reduce((total, message) => total + Array.from(message.content).length, 0);
-    }
-
-    function description(message) {
-      const firstLine = message.content.split('\n', 1)[0];
-      return firstLine.length > 106 ? `${firstLine.slice(0, 105)}…` : firstLine || '(empty)';
-    }
-
-    function detail(label, before, after) {
-      const row = document.createElement('details');
-      const summary = document.createElement('summary');
-      summary.className = 'cursor-interaction';
-      summary.textContent = `${label} · ${description(after || before)}`;
-      row.append(summary);
-      const body = document.createElement('div');
-      body.className = 'trace-body';
-      const versions = before && after ? [['Previous request', before], ['This request', after]]
-        : [['', after || before]];
-      for (const [caption, message] of versions) {
-        if (caption) {
-          const label = document.createElement('p');
-          label.textContent = caption;
-          body.append(label);
+      function snapshot(record, prior) {
+        const before = prior?.messages || [];
+        const messages = record.messages;
+        let prefix = 0;
+        while (prefix < before.length && prefix < messages.length && equal(before[prefix], messages[prefix])) {
+          prefix++;
         }
-        const pre = document.createElement('pre');
-        const code = document.createElement('code');
-        code.textContent = message.content;
-        pre.append(code);
-        body.append(pre);
-      }
-      row.append(body);
-      return row;
-    }
-
-    function render() {
-      const index = Number(slider.value) - 1;
-      const current = turns[index];
-      if (!current) return;
-      const before = turns[index - 1]?.messages || [];
-      const after = current.messages;
-      const previousHistory = before.slice(0, -1);
-      const history = after.slice(0, -1);
-      let prefix = 0;
-      while (prefix < before.length && prefix < after.length && equal(before[prefix], after[prefix])) prefix++;
-      const totalChars = characterCount(after);
-      const prefixChars = characterCount(after.slice(0, prefix));
-      const meterText = `${format.format(prefixChars)} unchanged prefix characters of ${format.format(totalChars)} in prompt`;
-      output.value = `${current.turn} of ${turns.at(-1).turn}`;
-      measure.setAttribute('aria-label', meterText);
-      measureLabel.textContent = meterText;
-      prefixBar.style.width = `${totalChars ? 100 * prefixChars / totalChars : 0}%`;
-      const {prompt_tokens: input, cached_tokens: cached} = current.usage || {};
-      usageLabel.textContent = Number.isFinite(input)
-        ? `Backend tokens · ${format.format(input)} input${Number.isFinite(cached) ? ` · ${format.format(cached)} cached` : ''}`
-        : '';
-      usageLabel.hidden = !usageLabel.textContent;
-
-      const rows = [];
-      for (let i = 0; i < Math.max(previousHistory.length, history.length); i++) {
-        const old = previousHistory[i];
-        const message = history[i];
-        if (!message) rows.push(detail(`Removed ${old.role}`, old));
-        else if (!old) rows.push(detail(`Added ${message.role}`, null, message));
-        else if (!equal(old, message)) rows.push(detail(`Replaced ${message.role}`, old, message));
-        else if (includeUnchanged.checked) rows.push(detail(`Unchanged ${message.role}`, null, message));
-      }
-      const oldReminder = before.at(-1);
-      const reminder = after.at(-1);
-      if (!equal(oldReminder, reminder) || includeUnchanged.checked) {
-        rows.push(detail('Context reminder', equal(oldReminder, reminder) ? null : oldReminder, reminder));
-      }
-      if (current.reply) rows.push(detail('Model reply', null, {content: current.reply}));
-      entries.replaceChildren(...rows);
-    }
-
-    function load(records, requestedTurn) {
-      const next = records.filter(validTurn);
-      if (!next.length) throw new Error('No prompt messages found. Record the run with --trace-context.');
-      turns = next;
-      slider.max = String(turns.length);
-      const chosen = turns.findIndex(turn => turn.turn === requestedTurn);
-      slider.value = String(chosen < 0 ? Math.min(3, turns.length) : chosen + 1);
-      slider.disabled = turns.length === 1;
-      alert.hidden = true;
-      run.hidden = false;
-      render();
-    }
-
-    function updateSelection() {
-      render();
-      window.openai?.setWidgetState?.({
-        modelContent: {turn: turns[Number(slider.value) - 1]?.turn},
-        privateContent: {includeUnchanged: includeUnchanged.checked},
-      }).catch(() => {});
-    }
-
-    slider.addEventListener('input', updateSelection);
-    includeUnchanged.addEventListener('change', updateSelection);
-    file.addEventListener('change', async () => {
-      if (!file.files.length) return;
-      try {
-        const raw = await file.files[0].text();
-        const lines = raw.split('\n');
-        const records = [];
-        for (const [index, line] of lines.entries()) {
-          if (!line.trim()) continue;
-          try {
-            records.push(JSON.parse(line));
-          } catch (error) {
-            if (index !== lines.length - 1) throw error;
+        const sizes = messages.map(message => count(message.content));
+        const total = sizes.reduce((sum, size) => sum + size, 0);
+        const retained = sizes.slice(0, prefix).reduce((sum, size) => sum + size, 0);
+        const history = messages.slice(0, -1);
+        const oldHistory = before.slice(0, -1);
+        const entries = Array.from({length: Math.max(history.length, oldHistory.length)}, (_, i) => {
+          const message = history[i];
+          const replacesReply = i === oldHistory.length && typeof prior?.reply === 'string'
+            && message?.role === 'assistant'
+            && /^\[(tool calls:|invalid reply\])/.test(message.content);
+          if (replacesReply) {
+            return entry('message-' + i, {role: 'assistant', content: prior.reply}, message,
+              message.content === '[invalid reply]' ? 'Invalid reply placeholder' : 'Tool-call placeholder',
+              'Raw model reply');
           }
-        }
-        load(records);
-      } catch (error) {
-        alert.textContent = error.message;
-        alert.hidden = false;
-      } finally {
-        file.value = '';
+          return entry('message-' + i, oldHistory[i], message);
+        });
+        entries.push(entry('reminder', before.at(-1), messages.at(-1), 'Context reminder'));
+        const response = typeof record.reply === 'string'
+          ? entry('reply', null, {role: 'assistant', content: record.reply}, 'Model reply') : null;
+        return {...record, entries, response, total, retained};
       }
-    });
 
-    function restore(state) {
-      if (!state) return;
-      const position = turns.findIndex(turn => turn.turn === state.modelContent?.turn);
-      if (position >= 0) slider.value = String(position + 1);
-      includeUnchanged.checked = Boolean(state.privateContent?.includeUnchanged);
-      render();
-    }
+      function entry(id, before, after, name, beforeCaption) {
+        const message = after || before;
+        const kind = id === 'reply' ? 'reply' : !before ? 'added' : !after ? 'removed'
+          : equal(before, after) ? 'unchanged' : 'replaced';
+        const first = message.content.split('\n', 1)[0];
+        const toolId = first.match(/^<([^>]+)>$/)?.[1];
+        const previousToolId = before?.content.match(/^<([^>\n]+)>/)?.[1];
+        const title = name || (message.role === 'system' ? 'System prompt' : first === '<uploaded_files>' ? 'Task'
+          : first.startsWith('[tool calls:') ? 'Tool calls' : toolId || previousToolId || first || 'Empty message');
+        return {id, kind, before, after, title, role: message.role, beforeCaption};
+      }
 
-    const embedded = JSON.parse(document.getElementById('onward-embedded-trace').textContent);
-    if (embedded.length) {
-      file.closest('label').hidden = Boolean(window.openai);
-      load(embedded);
-      restore(window.openai?.widgetState);
-    }
-    window.addEventListener('openai:set_globals', event => restore(event.detail?.globals?.widgetState));
-  })();
-</script>
+      function statusName(kind) {
+        return kind === 'reply' ? 'Reply' : titleCase(kind);
+      }
+
+      function makeStatus(kind) {
+        const status = document.createElement('span');
+        status.className = 'status';
+        status.dataset.kind = kind;
+        status.textContent = statusName(kind);
+        return status;
+      }
+
+      function renderChart() {
+        const max = Math.max(1, ...turns.map(turn => turn.total));
+        chart.replaceChildren(...turns.map((turn, index) => {
+          function point(label, step) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'turn-point';
+            button.title = label;
+            button.setAttribute('aria-label', label);
+            button.dataset.index = step;
+            return button;
+          }
+          const pair = document.createElement('div');
+          pair.className = 'turn-pair';
+          const request = point('Request ' + turn.turn + ' · ' + format.format(turn.total) + ' characters', index * 2);
+          const response = point('Response ' + turn.turn, index * 2 + 1);
+          response.classList.add('response-point');
+          const stack = document.createElement('span');
+          stack.className = 'stack';
+          stack.setAttribute('aria-hidden', 'true');
+          stack.style.height = Math.round(62 * turn.total / max) + 'px';
+          const prefix = document.createElement('span');
+          prefix.style.height = (turn.total ? 100 * turn.retained / turn.total : 0) + '%';
+          stack.append(prefix);
+          request.append(stack);
+          const dot = document.createElement('span');
+          dot.setAttribute('aria-hidden', 'true');
+          response.append(dot);
+          const number = document.createElement('span');
+          number.className = 'turn-number mono';
+          number.textContent = turn.turn;
+          number.setAttribute('aria-hidden', 'true');
+          pair.append(request, response, number);
+          return pair;
+        }));
+      }
+
+      function renderDetail(item) {
+        const status = $('#detail-status');
+        status.hidden = !item;
+        if (!item) {
+          $('#detail-title').textContent = 'No changes';
+          $('.detail-meta').textContent = 'Open Full prompt to inspect this request.';
+          versions.replaceChildren();
+          return;
+        }
+        $('#detail-title').textContent = item.title;
+        status.dataset.kind = item.kind;
+        status.textContent = statusName(item.kind);
+        const dual = item.kind === 'replaced';
+        $('.detail-meta').textContent = (item.kind === 'reply' ? 'Raw model reply' : titleCase(item.role)) + (dual
+          ? ' · ' + format.format(count(item.before.content)) + ' → ' + format.format(count(item.after.content)) + ' characters'
+          : ' · ' + format.format(count((item.after || item.before).content)) + ' characters');
+
+        function pane(label, message) {
+          const node = document.createElement('div');
+          node.className = 'code-pane';
+          const head = document.createElement('div');
+          head.className = 'code-head';
+          const title = document.createElement('strong');
+          title.textContent = label;
+          const lines = document.createElement('small');
+          const lineCount = message.content.split('\n').length;
+          lines.textContent = format.format(lineCount) + (lineCount === 1 ? ' line' : ' lines');
+          head.append(title, lines);
+          const pre = document.createElement('pre');
+          pre.tabIndex = 0;
+          pre.setAttribute('aria-label', label);
+          const code = document.createElement('code');
+          code.textContent = message.content;
+          if (/^\[(result |error )/.test(message.content)) code.className = 'placeholder-code';
+          pre.append(code);
+          node.append(head, pre);
+          return node;
+        }
+
+        versions.classList.toggle('dual', dual);
+        versions.replaceChildren(...(dual ? [pane(item.beforeCaption || 'Previous request', item.before),
+          pane('This request', item.after)]
+          : [pane(item.kind === 'reply' ? 'Model response' : item.after ? 'This request' : 'Previous request',
+            item.after || item.before)]));
+      }
+
+      function selectMessage(id) {
+        selected = id;
+        for (const row of rows.children) row.setAttribute('aria-pressed', String(row.dataset.id === id));
+        renderDetail(visible.find(item => item.id === id));
+      }
+
+      function renderMessages() {
+        const turn = turns[Math.floor(active / 2)];
+        const response = active % 2 === 1;
+        if (mode === 'full') {
+          visible = turn.entries.filter(item => item.after);
+          if (response) visible = visible.map(item => ({...item, kind: 'unchanged', before: null}));
+        } else {
+          visible = response ? (turn.response ? [turn.response] : []) : turn.entries.filter(item => item.kind !== 'unchanged');
+        }
+        rows.replaceChildren(...visible.map(item => {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'message-row';
+          row.dataset.id = item.id;
+          const title = document.createElement('span');
+          title.className = 'message-title';
+          title.textContent = item.title;
+          const role = document.createElement('span');
+          role.className = 'message-role';
+          role.textContent = titleCase(item.role);
+          row.append(title, makeStatus(item.kind), role);
+          return row;
+        }));
+        const defaultEntry = visible.find(item => item.kind === 'replaced' && !item.beforeCaption && item.id !== 'reminder')
+          || visible.find(item => item.beforeCaption || item.title === 'Task') || visible[0];
+        selectMessage(visible.some(item => item.id === selected) ? selected : defaultEntry?.id || '');
+      }
+
+      function setStep(index, focus = false) {
+        const size = turns.length * 2;
+        active = Math.min(size - 1, Math.max(index, 0));
+        selected = '';
+        const turnIndex = Math.floor(active / 2);
+        const turn = turns[turnIndex];
+        const buttons = chart.querySelectorAll('.turn-point');
+        for (const [i, button] of [...buttons].entries()) {
+          button.setAttribute('aria-pressed', String(i === active));
+          button.tabIndex = i === active ? 0 : -1;
+        }
+        for (const [i, pair] of [...chart.children].entries()) pair.classList.toggle('is-current', i === turnIndex);
+        if (focus) buttons[active].focus({preventScroll: true});
+        const activePair = chart.children[turnIndex];
+        const scroll = chart.parentElement;
+        scroll.scrollLeft = Math.max(activePair.offsetLeft + activePair.offsetWidth - scroll.clientWidth,
+          Math.min(scroll.scrollLeft, activePair.offsetLeft));
+        previous.disabled = active === 0;
+        next.disabled = active === size - 1;
+        const label = (active % 2 === 0 ? 'Request ' : 'Response ') + turn.turn;
+        $('#current-turn').value = label;
+        $('#step-count').textContent = 'Step ' + (active + 1) + ' of ' + size;
+        slider.value = active + 1;
+        slider.setAttribute('aria-valuetext', label);
+        $('#prompt-size').value = format.format(turn.total);
+        $('#prefix-size').value = format.format(turn.retained);
+        $('#prefix-share').textContent = turn.total ? Math.round(100 * turn.retained / turn.total) + '% of prompt' : '';
+        const {prompt_tokens: input, cached_tokens: cached} = turn.usage || {};
+        $('#backend-input').value = Number.isFinite(input) ? format.format(input) : '—';
+        $('#backend-cache').textContent = Number.isFinite(cached) ? format.format(cached) + ' cached' : '';
+        renderMessages();
+      }
+
+      function setMode(value) {
+        mode = value;
+        changes.setAttribute('aria-pressed', String(mode === 'changes'));
+        fullPrompt.setAttribute('aria-pressed', String(mode === 'full'));
+        renderMessages();
+      }
+
+      function load(records, metadata = {}) {
+        const valid = records.filter(validTurn);
+        if (!valid.length) throw new Error('No prompt messages found. Record the run with --trace-context.');
+        turns = valid.map((record, index) => snapshot(record, valid[index - 1]));
+        const label = $('#run-label');
+        const parts = [metadata.name, metadata.model, turns.length + (turns.length === 1 ? ' turn' : ' turns')].filter(Boolean);
+        label.replaceChildren(...parts.map(part => {
+          const text = document.createElement('span');
+          text.textContent = part;
+          return text;
+        }));
+        label.hidden = false;
+        const result = $('#run-result');
+        result.textContent = metadata.result || '';
+        result.hidden = !metadata.result;
+        $('#empty-state').hidden = true;
+        $('#trace-run').hidden = false;
+        alert.hidden = true;
+        renderChart();
+        mode = 'changes';
+        changes.setAttribute('aria-pressed', 'true');
+        fullPrompt.setAttribute('aria-pressed', 'false');
+        slider.max = turns.length * 2;
+        setStep(0);
+      }
+
+      chart.addEventListener('click', event => {
+        const button = event.target.closest('button[data-index]');
+        if (button) setStep(Number(button.dataset.index), true);
+      });
+      chart.addEventListener('keydown', event => {
+        const destination = {ArrowLeft: active - 1, ArrowRight: active + 1, Home: 0, End: turns.length * 2 - 1}[event.key];
+        if (destination !== undefined) {
+          event.preventDefault();
+          setStep(destination, true);
+        }
+      });
+      rows.addEventListener('click', event => {
+        const row = event.target.closest('button[data-id]');
+        if (row) selectMessage(row.dataset.id);
+      });
+      slider.addEventListener('input', () => setStep(Number(slider.value) - 1));
+      previous.addEventListener('click', () => setStep(active - 1));
+      next.addEventListener('click', () => setStep(active + 1));
+      changes.addEventListener('click', () => setMode('changes'));
+      fullPrompt.addEventListener('click', () => setMode('full'));
+      file.addEventListener('change', async () => {
+        if (!file.files.length) return;
+        try {
+          const uploaded = file.files[0];
+          const lines = (await uploaded.text()).split('\n');
+          const records = [];
+          for (const [index, line] of lines.entries()) {
+            if (!line.trim()) continue;
+            try {
+              records.push(JSON.parse(line));
+            } catch (error) {
+              if (index !== lines.length - 1) throw error;
+            }
+          }
+          load(records, {name: uploaded.name});
+        } catch (error) {
+          alert.textContent = error.message;
+          alert.hidden = false;
+        } finally {
+          file.value = '';
+        }
+      });
+
+      const embedded = JSON.parse($('#onward-embedded-trace').textContent);
+      if (embedded.length) load(embedded, JSON.parse($('#onward-run-metadata').textContent));
+    })();
+  </script>
+</body>
+</html>
