@@ -61,6 +61,14 @@ prompt_cache_options = { mode = "implicit" }
             })
         assert str(request.url) == "https://api.openai.com/v1/responses"
         assert request.headers["authorization"] == "Bearer openai-fixture"
+        for message in body["input"]:
+            for block in message["content"]:
+                if message["role"] == "assistant":
+                    assert block["type"] == "output_text"
+                    assert block["annotations"] == []
+                    assert "prompt_cache_breakpoint" not in block
+                else:
+                    assert block["type"] == "input_text"
         return httpx.Response(200, json={
             "output": [{"type": "message", "content": [{"type": "output_text", "text": content}]}],
             "status": "completed", "usage": {"input_tokens": 20, "output_tokens": 2,
@@ -88,7 +96,8 @@ prompt_cache_options = { mode = "implicit" }
                 if "cache_control" in block or "prompt_cache_breakpoint" in block]
 
     acting = [blocks(body, acting_provider) for body in requests["acting"]]
-    assert [marked(entries) for entries in acting] == [[2], [3], [5]]
+    expected = [[2], [3], [5]] if acting_provider == "anthropic" else [[2], [2], [2, 4]]
+    assert [marked(entries) for entries in acting] == expected
     assert "raw-observation" in acting[1][3]["text"]
     assert acting[2][3]["text"] == '[result "result-a"]\nCommand succeeded.'
     assert "raw-observation" in acting[2][5]["text"]
@@ -100,7 +109,10 @@ prompt_cache_options = { mode = "implicit" }
     assert requests["summary"][1][format_location]["format"]["schema"]["required"] == ["1", "2"]
 
     records = [json.loads(line) for line in next(log_dir.glob("*.jsonl")).read_text().splitlines()]
-    assert [record["cache_prefix_messages"] for record in records] == [2, 3, 5]
+    assert [record["cache_prefix_messages"] for record in records] == [indices[-1] for indices in expected]
+    assert [record.get("cache_breakpoints_messages") for record in records] == [
+        indices if len(indices) > 1 else None for indices in expected
+    ]
     assert [record["usage"] for record in records] == [
         {"prompt_tokens": 20, "completion_tokens": 2, "cached_tokens": 5, "cache_write_tokens": 3},
     ] * 3

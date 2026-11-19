@@ -65,11 +65,12 @@ Cache hits are logged per turn as `usage.cached_tokens` when the provider report
 
 ### Cache only stable context
 
-`--cache-stable-prefix` works with `--summary-model`. The acting request places a single
+`--cache-stable-prefix` works with `--summary-model`. The acting request places its latest
 explicit breakpoint before the first raw result scheduled for summarization. The model still
 reads that result and the changing turn reminder in the same request. Once the result becomes
-a note, it can be included in the cacheable prefix. The separate summary requests run with
-prompt caching disabled.
+a note, it can be included in the cacheable prefix. OpenAI Responses uses the last eligible
+non-assistant message and retains the previous breakpoint so the next request can read that
+prefix from the cache. The separate summary requests run with prompt caching disabled.
 
 Configure direct API entries in inference-db. Each model can use either Anthropic Messages or
 OpenAI Responses, depending on which provider serves it.
@@ -90,9 +91,10 @@ onward --inference-db anthropic --model claude-sonnet-5 \
   --cache-stable-prefix --no-schema --trace-context "make the tests pass"
 ```
 
-The log includes `cache_prefix_messages`, the number of messages through the breakpoint,
-including the system prompt. `usage.cache_write_tokens` records provider-reported writes
-when available. The provider's minimum prefix length still applies.
+The log includes `cache_prefix_messages`, the number of messages through the latest breakpoint,
+including the system prompt. When a request has multiple breakpoints, `cache_breakpoints_messages`
+lists all of them. `usage.cache_write_tokens` records provider-reported writes when available.
+The provider's minimum prefix length still applies.
 
 ## Implementation
 
@@ -163,8 +165,9 @@ table. Re-read tokens estimate the size of retrieval output that reached a later
 four characters per token with rounding per message. The viewer shows run totals and counts
 through the selected request or response.
 
-Select up to four JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
-trace switch above the timeline to inspect either run at the selected step.
+Select up to five JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
+trace switch above the timeline to inspect a run at the selected step. Summary-token estimates
+count summary text in each acting request, including summaries carried forward from earlier turns.
 Stable-prefix traces also show the request breakpoint and the number of cache writes reported
 by the provider.
 For GPT-6.2 Sol traces with complete token counts, the viewer estimates Standard API costs from

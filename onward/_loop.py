@@ -153,13 +153,15 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
     if schema:
         params["extra_body"] = {**params.get("extra_body", {}), "response_format": response_format(tool_specs)}
     log = log_path.open("a") if log_path else None
+    previous_cache_prefix = 0
     try:
         for turn in range(start_turn, start_turn + max_turns):
             messages = render(items, system, context_budget)
             # Position 0 in messages is the system prompt. The last message is the reminder.
             prefix = next((i for i, item in enumerate(items, 1) if item.placeholder is not None),
                           len(items) + 1) if cache_stable_prefix else None
-            turn_params = {**params, "cache_prefix": prefix} if prefix is not None else params
+            turn_params = ({**params, "cache_prefix": prefix, "previous_cache_prefix": previous_cache_prefix}
+                           if prefix is not None else params)
             response = client.chat.completions.create(model=model, messages=messages, **turn_params)
             reply = _ECHOED_TAGS.sub("", response.choices[0].message.content or "")
             record: dict[str, Any] = {"turn": turn, "items_before": len(items),
@@ -170,7 +172,11 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
                 record["messages"] = messages
                 record["model"] = model
             if prefix is not None:
-                record["cache_prefix_messages"] = prefix
+                breakpoints = getattr(response, "cache_breakpoints", [prefix])
+                previous_cache_prefix = breakpoints[-1] if breakpoints else 0
+                record["cache_prefix_messages"] = previous_cache_prefix
+                if len(breakpoints) > 1:
+                    record["cache_breakpoints_messages"] = breakpoints
             try:
                 out = parse(reply, tools)
             except ProtocolError as exc:

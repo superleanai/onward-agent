@@ -83,11 +83,13 @@
     .comparison-scroll { overflow-x: auto; }
     .comparison-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .83rem; }
     .comparison[data-runs="4"] .comparison-table { min-width: 38rem; }
+    .comparison[data-runs="5"] .comparison-table { min-width: 47rem; }
     .comparison-table th, .comparison-table td {
       padding: 6px 13px; text-align: right; overflow-wrap: anywhere;
       vertical-align: middle; border-bottom: 1px solid var(--line);
     }
     .comparison-table th:first-child { width: 42%; padding-left: 17px; text-align: left; }
+    .comparison[data-runs="5"] .comparison-table th:first-child { width: 24%; }
     .comparison-table th.delta { width: 15%; }
     .comparison-table thead { background: var(--inset); }
     .comparison-table tbody th { color: var(--muted); font-weight: 500; }
@@ -697,7 +699,9 @@
         boundary.hidden = !Number.isInteger(turn.cache_prefix_messages) && !Number.isInteger(written);
         const cacheDetails = [];
         if (Number.isInteger(turn.cache_prefix_messages)) {
-          cacheDetails.push('Cache breakpoint after ' + turn.cache_prefix_messages + ' of ' + turn.messages.length + ' messages');
+          const positions = turn.cache_breakpoints_messages || [turn.cache_prefix_messages];
+          cacheDetails.push((positions.length > 1 ? 'Cache breakpoints after ' : 'Cache breakpoint after ')
+            + positions.join(' and ') + ' of ' + turn.messages.length + ' messages');
         }
         if (Number.isInteger(written)) cacheDetails.push(format.format(written) + ' tokens written');
         boundary.textContent = cacheDetails.join(' · ');
@@ -729,6 +733,28 @@
         return total;
       }
 
+      function summaryTokenEstimate(records) {
+        let total = 0;
+        for (const {messages} of records) {
+          for (const {role, content} of messages) {
+            const lineBreak = content.indexOf('\n');
+            const marker = lineBreak === -1 ? '' : content.slice(0, lineBreak);
+            if ((role === 'assistant' && /^\[tool calls: \d+\]$/.test(marker))
+                || (role === 'user' && /^\[(result|error) ".*"\]$/.test(marker))) {
+              total += Math.ceil(count(content.slice(lineBreak + 1)) / 4);
+            } else if (role === 'assistant' && content.trimStart().startsWith('{')) {
+              try {
+                const {summary} = JSON.parse(content);
+                if (typeof summary === 'string') total += Math.ceil(count(summary) / 4);
+              } catch {
+                // Invalid replies can appear in older traces.
+              }
+            }
+          }
+        }
+        return total;
+      }
+
       function prepareDataset({records, metadata}) {
         const valid = records.filter(validTurn);
         if (!valid.length) throw new Error('No prompt messages found. Record the run with --trace-context.');
@@ -756,8 +782,7 @@
             reread: reads.tokens,
             promptPeak: Math.max(...snapshots.map(turn => turn.total)),
             promptTotal: snapshots.reduce((sum, turn) => sum + turn.total, 0),
-            summaryTokens: valid.reduce((sum, turn) =>
-              sum + (typeof turn.summary === 'string' ? Math.ceil(count(turn.summary) / 4) : 0), 0),
+            summaryTokens: summaryTokenEstimate(valid),
             backendInput,
             backendCached,
             backendWritten,
@@ -833,9 +858,11 @@
           return row;
         }));
         const usesBridge = datasets.some(dataset => dataset.metadata.backend === 'Codex CLI');
+        const directPair = datasets.filter(dataset => dataset.metadata.backend === 'OpenAI Responses API').length === 2;
         $('#comparison-note').textContent = (pair ? 'Change is the right run minus the left. ' : '')
-          + 'Re-read and acting-model summary tokens use four characters per token.'
+          + 'Re-read and summary text in acting prompts use four characters per token.'
           + ' Usage from separate summarizer requests is excluded.'
+          + (directPair ? ' The two API runs use the same models and transport.' : '')
           + (usesBridge ? ' Codex CLI counts include its prompt wrapper.' : '');
       }
 
@@ -928,7 +955,7 @@
       file.addEventListener('change', async () => {
         if (!file.files.length) return;
         try {
-          if (file.files.length > 4) throw new Error('Choose up to four JSONL traces.');
+          if (file.files.length > 5) throw new Error('Choose up to five JSONL traces.');
           load(await Promise.all([...file.files].map(readDataset)));
         } catch (error) {
           alert.textContent = error.message;

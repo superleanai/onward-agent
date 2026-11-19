@@ -44,7 +44,8 @@ class CacheClient:
         self.chat = SimpleNamespace(completions=self)
 
     def create(self, *, model: str, messages: list[dict[str, str]], cache_prefix: int,
-               extra_body: dict[str, Any] | None = None, **params: Any) -> SimpleNamespace:
+               previous_cache_prefix: int = 0, extra_body: dict[str, Any] | None = None,
+               **params: Any) -> SimpleNamespace:
         """Treat the first cache_prefix messages as stable, or write nothing when it is zero."""
         if not 0 <= cache_prefix <= len(messages):
             raise ValueError("cache prefix is outside the prompt")
@@ -58,7 +59,13 @@ class CacheClient:
         body.update(model=model, stream=False)
         if self.provider == "anthropic":
             return self._anthropic(body, messages, cache_prefix, schema_format)
-        return self._openai(body, messages, cache_prefix, schema_format)
+        # Responses does not cache at assistant output blocks. Keep the previous
+        # eligible boundary so a growing prefix can reuse its earlier cache entry.
+        latest = cache_prefix
+        while latest and messages[latest - 1]["role"] == "assistant":
+            latest -= 1
+        breakpoints = sorted({position for position in (previous_cache_prefix, latest) if 0 < position <= latest})
+        return self._openai(body, messages, breakpoints, schema_format)
 
     def _anthropic(self, body: dict[str, Any], messages: list[dict[str, str]], cache_prefix: int,
                    schema_format: dict[str, Any] | None) -> SimpleNamespace:
@@ -86,14 +93,18 @@ class CacheClient:
         return _completion(output, data.get("stop_reason"), usage["input_tokens"] + read + written,
                            usage["output_tokens"], read, written)
 
-    def _openai(self, body: dict[str, Any], messages: list[dict[str, str]], cache_prefix: int,
+    def _openai(self, body: dict[str, Any], messages: list[dict[str, str]], breakpoints: list[int],
                 schema_format: dict[str, Any] | None) -> SimpleNamespace:
         input_items = []
         for position, message in enumerate(messages, 1):
-            block: dict[str, Any] = {"type": "input_text", "text": message["content"]}
-            if position == cache_prefix:
-                block["prompt_cache_breakpoint"] = {"mode": "explicit"}
             role = "developer" if message["role"] == "system" else message["role"]
+            block: dict[str, Any]
+            if role == "assistant":
+                block = {"type": "output_text", "text": message["content"], "annotations": []}
+            else:
+                block = {"type": "input_text", "text": message["content"]}
+            if position in breakpoints:
+                block["prompt_cache_breakpoint"] = {"mode": "explicit"}
             input_items.append({"role": role, "content": [block]})
         body.update(input=input_items, prompt_cache_options={"mode": "explicit"}, store=False)
         if "max_tokens" in body:
@@ -108,8 +119,10 @@ class CacheClient:
         usage = data["usage"]
         details = usage.get("input_tokens_details") or {}
         reason = (data.get("incomplete_details") or {}).get("reason", data.get("status"))
-        return _completion(output, reason, usage["input_tokens"], usage["output_tokens"],
-                           details.get("cached_tokens", 0), details.get("cache_write_tokens"))
+        response = _completion(output, reason, usage["input_tokens"], usage["output_tokens"],
+                               details.get("cached_tokens", 0), details.get("cache_write_tokens"))
+        response.cache_breakpoints = breakpoints
+        return response
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         response = self.http.post(self.url, json=body)
