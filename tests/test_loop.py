@@ -113,6 +113,7 @@ def test_summarizes_calls_and_consumed_results_with_separate_usage(tools: Any, t
     ]
     records = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
     assert [record["usage"]["prompt_tokens"] for record in records] == [20, 20, 20]
+    assert [record["model"] for record in records] == ["m", "m", "m"]
     assert [record["messages"] for record in records] == acting.calls
 
 

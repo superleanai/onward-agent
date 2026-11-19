@@ -120,7 +120,8 @@ protocol. `new_items` is present for valid turns that continue the task.
 jq -c '{turn, items_before, items_after, prompt: .usage.prompt_tokens, cached: .usage.cached_tokens}' runs/*.jsonl
 ```
 
-With `--trace-context`, every logged turn includes the exact `messages` passed to the model client.
+With `--trace-context`, every logged turn includes the acting model name and the exact `messages`
+passed to the model client.
 Open [the context viewer](tools/context-viewer.html) in a browser and select that run's JSONL file.
 The timeline alternates between requests and responses. Request steps show additions, replacements,
 and the unchanged prefix. Response steps show the raw model reply. Select a changed entry to compare
@@ -133,6 +134,10 @@ through the selected request or response.
 
 Select up to three JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
 trace switch above the timeline to inspect either run at the selected step.
+For GPT-6.2 Sol traces with complete token counts, the viewer estimates Standard API costs from
+uncached input, cached input, and output tokens. The estimate uses the recorded acting-model
+usage and prices tokens without a logged cache hit as ordinary input.
+[OpenAI model pricing](https://developers.openai.com/api/docs/models/gpt-6.2-sol#pricing)
 
 ## Development
 

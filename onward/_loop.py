@@ -160,6 +160,7 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
                                       "reply": reply}
             if trace_context:
                 record["messages"] = messages
+                record["model"] = model
             try:
                 out = parse(reply, tools)
             except ProtocolError as exc:

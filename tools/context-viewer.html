@@ -90,7 +90,11 @@
     .comparison-table thead { background: var(--inset); }
     .comparison-table tbody th { color: var(--muted); font-weight: 500; }
     .comparison-table tbody td.delta { color: var(--accent); }
+    .comparison-table tr[data-metric="apiCost"] { background: #222c20; }
+    .comparison-table tr[data-metric="apiCost"] > * { color: var(--accent); font-weight: 650; }
     .comparison-note { padding: 9px 17px; color: var(--muted); font-size: .74rem; }
+    .comparison-note + .comparison-note { padding-top: 0; }
+    .comparison-note a { color: var(--accent); }
     .trace-controls { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     .trace-controls .mode { margin: 0; max-width: 100%; }
     .trace-controls .mode button { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
@@ -271,6 +275,12 @@
           <tbody id="comparison-rows"></tbody>
         </table>
         <p class="comparison-note" id="comparison-note"></p>
+        <p class="comparison-note" id="pricing-note" hidden>
+          USD estimate at GPT-6.2 Sol Standard API rates. Short-context rates per 1M tokens are
+          $2.00 uncached input, $0.10 cached input, and $10.00 output. The traces lack separate
+          cache-write counts, so the estimate prices those tokens as ordinary input.
+          <a href="https://developers.openai.com/api/docs/models/gpt-6.2-sol#pricing">OpenAI pricing</a>
+        </p>
       </details>
       <section class="timeline panel" aria-labelledby="timeline-title">
         <div class="trace-controls">
@@ -351,6 +361,10 @@
       const $ = selector => document.querySelector(selector);
       const format = new Intl.NumberFormat();
       const signed = new Intl.NumberFormat(undefined, {signDisplay: 'exceptZero'});
+      const dollars = new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD',
+        minimumFractionDigits: 4, maximumFractionDigits: 4});
+      const signedDollars = new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD',
+        minimumFractionDigits: 4, maximumFractionDigits: 4, signDisplay: 'exceptZero'});
       const chart = $('.turn-chart');
       const rows = $('.message-rows');
       const versions = $('.versions');
@@ -678,9 +692,25 @@
         renderMessages();
       }
 
+      function estimateApiCost(records, model) {
+        if (model !== 'gpt-6.2-sol') return null;
+        let total = 0;
+        for (const record of records) {
+          const {prompt_tokens: input, cached_tokens: cached, completion_tokens: output} = record.usage || {};
+          if ((record.model && record.model !== model) || ![input, cached, output].every(
+            value => Number.isSafeInteger(value) && value >= 0) || cached > input) return null;
+          const longContext = input > 272_000;
+          const inputCost = ((input - cached) * 2 + cached * 0.10) * (longContext ? 2 : 1);
+          const outputCost = output * (longContext ? 15 : 10);
+          total += (inputCost + outputCost) / 1_000_000;
+        }
+        return total;
+      }
+
       function prepareDataset({records, metadata}) {
         const valid = records.filter(validTurn);
         if (!valid.length) throw new Error('No prompt messages found. Record the run with --trace-context.');
+        const model = metadata.model || valid[0].model;
         const snapshots = valid.map((record, index) => snapshot(record, valid[index - 1]));
         const reads = retrievalStats(valid);
         function usageTotal(key) {
@@ -690,11 +720,12 @@
         const backendInput = usageTotal('prompt_tokens');
         const backendCached = usageTotal('cached_tokens');
         return {
-          metadata,
+          metadata: {...metadata, model},
           snapshots,
           reads,
           metrics: {
             result: metadata.result,
+            apiCost: estimateApiCost(valid, model),
             turns: snapshots.length,
             toolCalls: reads.otherCalls,
             retrieves: reads.calls,
@@ -733,8 +764,11 @@
           }
           return header;
         }));
+        const showCost = datasets.some(dataset => dataset.metrics.apiCost !== null);
+        $('#pricing-note').hidden = !showCost;
         const fields = [
           ['result', 'Benchmark verifier'],
+          ...(showCost ? [['apiCost', 'Estimated API cost']] : []),
           ['turns', 'Model requests'],
           ['toolCalls', 'File and tool calls'],
           ['retrieves', 'Retrieve calls'],
@@ -755,16 +789,18 @@
           header.textContent = name;
           row.append(header);
           const values = datasets.map(dataset => dataset.metrics[key]);
+          const amount = key === 'apiCost' ? dollars : format;
           for (const value of values) {
             const cell = row.insertCell();
             if (Number.isFinite(value)) cell.className = 'mono';
-            cell.textContent = Number.isFinite(value) ? format.format(value) : value || '—';
+            cell.textContent = Number.isFinite(value) ? amount.format(value) : value || '—';
           }
           if (pair) {
             const [a, b] = values;
             const delta = row.insertCell();
             delta.className = 'mono delta';
-            delta.textContent = Number.isFinite(a) && Number.isFinite(b) ? signed.format(b - a) : '—';
+            const difference = key === 'apiCost' ? signedDollars : signed;
+            delta.textContent = Number.isFinite(a) && Number.isFinite(b) ? difference.format(b - a) : '—';
           }
           return row;
         }));
