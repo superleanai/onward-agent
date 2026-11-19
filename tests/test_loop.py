@@ -10,13 +10,15 @@ from agentknit import default_tool_spec
 
 from onward._loop import run
 from onward._results import ResultStore
+from onward._summary import ContextSummarizer
 
 
 class Scripted:
     """Fake OpenAI client replaying canned replies and recording the messages it got."""
 
-    def __init__(self, replies: list[str]) -> None:
+    def __init__(self, replies: list[str], usage: dict[str, int] | None = None) -> None:
         self.replies = list(replies)
+        self.usage = SimpleNamespace(**usage) if usage is not None else None
         self.calls: list[list[dict[str, str]]] = []
         self.kwargs: list[dict[str, Any]] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
@@ -25,7 +27,7 @@ class Scripted:
         self.calls.append(messages)
         self.kwargs.append(kw)
         msg = SimpleNamespace(content=self.replies.pop(0))
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=self.usage)
 
 
 def _r(label: str, tool_calls: list[dict[str, Any]] | None = None, done: str | None = None) -> str:
@@ -81,6 +83,37 @@ def test_cache_prefix_breaks_at_each_replaced_batch(tools: Any, tmp_path: Path) 
     assert client.calls[2][3] != client.calls[1][3]
     assert client.calls[3][:5] == client.calls[2][:5]
     assert client.calls[3][5] != client.calls[2][5]
+
+
+def test_summarizes_calls_and_consumed_results_with_separate_usage(tools: Any, tmp_path: Path) -> None:
+    acting = Scripted([
+        _r("first", [{"tool": "exec_shell", "args": {"command": "echo original-output"}}]),
+        _r("reread", [{"retrieve": "call-first-0"}]),
+        _r("final", done="ok"),
+    ], {"prompt_tokens": 20, "completion_tokens": 10})
+    summary_client = Scripted([
+        '{"1":"Ran echo."}',
+        '{"2":"Requested earlier result.","1":"Echo printed original-output."}',
+        '{"1":"Read the saved output."}',
+    ], {"prompt_tokens": 900, "completion_tokens": 80})
+    result = _run(acting, tools, tmp_path, summarize=ContextSummarizer(summary_client, "summary-model", {}),
+                  trace_context=True)
+
+    assert result.final == "ok" and result.turns == 3
+    assert acting.calls[1][2]["content"] == "[tool calls: 1]\nRan echo."
+    original_result = acting.calls[1][3]["content"]
+    assert "original-output" in original_result
+    assert acting.calls[2][3]["content"] == '[result "call-first-0"]\nEcho printed original-output.'
+    assert acting.calls[2][4]["content"] == "[tool calls: 1]\nRequested earlier result."
+    assert acting.calls[2][5]["content"] == original_result
+    assert result.items[-2].content == '[result "call-first-0"]\nRead the saved output.'
+    payloads = [json.loads(messages[1]["content"]) for messages in summary_client.calls]
+    assert [[item["kind"] for item in payload["entries"].values()] for payload in payloads] == [
+        ["model_output"], ["tool_result", "model_output"], ["tool_result"],
+    ]
+    records = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
+    assert [record["usage"]["prompt_tokens"] for record in records] == [20, 20, 20]
+    assert [record["messages"] for record in records] == acting.calls
 
 
 def test_tool_calls_appended_in_listed_order(tools: Any, tmp_path: Path) -> None:

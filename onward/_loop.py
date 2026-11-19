@@ -6,6 +6,7 @@ import json
 import re
 import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -41,6 +42,21 @@ class Result:
     final: str | None
     items: list[Item]
     turns: int
+
+
+Summarize = Callable[[str, list[Item]], list[str]]
+
+
+def _compact(items: list[Item], task: str, summarize: Summarize | None) -> list[Item]:
+    pending = [item for item in items if item.placeholder is not None]
+    if not pending:
+        return items
+    summaries = iter(summarize(task, pending)) if summarize is not None else None
+    return [
+        Item(item.kind, item.placeholder if summaries is None else f"{item.placeholder}\n{next(summaries)}")
+        if item.placeholder is not None else item
+        for item in items
+    ]
 
 
 def _cap(item: Item, limit: int) -> Item:
@@ -112,18 +128,18 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         tool_dispatch: dict[str, Any], *, request_params: dict[str, Any] | None = None,
         max_turns: int = 50, log_path: Path | None = None, schema: bool = True,
         max_item_chars: int = 30_000, context_budget: int | None = None,
-        trace_context: bool = False,
+        trace_context: bool = False, summarize: Summarize | None = None,
         results_dir: Path | None = None, items: list[Item] | None = None,
         results: ResultStore | None = None, start_turn: int = 1) -> Result:
     """Run `task` until the model sets `done` or `max_turns` is reached.
 
-    Call placeholders are recorded immediately. Results are replaced after the model sees them once.
+    Calls are compacted immediately. Results are compacted after the acting model sees them once.
     `schema` sends the turn schema as `response_format` (the endpoint must accept `json_schema`).
     Existing `items`, `results`, and `start_turn` let a REPL continue one conversation.
     """
     specs = {t["function"]["name"]: t for t in tool_specs}
     tools = set(specs)
-    system = system_prompt(tool_specs)
+    system = system_prompt(tool_specs, summarize_context=summarize is not None)
     items = (items or []) + [Item("task", task)]
     if results is None:
         if results_dir is None:
@@ -137,8 +153,6 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         for turn in range(start_turn, start_turn + max_turns):
             messages = render(items, system, context_budget)
             response = client.chat.completions.create(model=model, messages=messages, **params)
-            items = [Item(item.kind, item.placeholder) if item.placeholder is not None else item
-                     for item in items]
             reply = _ECHOED_TAGS.sub("", response.choices[0].message.content or "")
             record: dict[str, Any] = {"turn": turn, "items_before": len(items),
                                       "usage": _usage(response),
@@ -149,9 +163,15 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
             try:
                 out = parse(reply, tools)
             except ProtocolError as exc:
-                items.extend([Item("model_output", "[invalid reply]"),
-                              Item("error", f"protocol error: {exc}")])
+                out = None
                 record["error"] = str(exc)
+            if out is not None and out.done is None:
+                marker = f"[tool calls: {len(out.tool_calls)}]"
+                items.append(Item("model_output", reply, marker) if out.tool_calls else Item("model_output", marker))
+            items = _compact(items, task, summarize)
+            if out is None:
+                items.extend([Item("model_output", "[invalid reply]"),
+                              Item("error", f"protocol error: {record['error']}")])
             else:
                 if out.done is not None:
                     items.append(Item("model_output", json.dumps({"tool_calls": [], "done": out.done})))
@@ -159,7 +179,6 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
                     if log:
                         log.write(json.dumps(record) + "\n")
                     return Result(out.done, items, turn)
-                items.append(Item("model_output", f"[tool calls: {len(out.tool_calls)}]"))
                 new_items: list[list[str | int]] = []
                 for call in out.tool_calls:
                     item = _execute(call, tool_dispatch, specs, results)

@@ -28,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="one JSONL log per run, one record per turn (default: %(default)s)")
     parser.add_argument("--trace-context", action="store_true",
                         help="include the exact prompt messages in each turn's run log")
+    parser.add_argument("--summary-model", help="use this separate model to summarize compacted context entries")
+    parser.add_argument("--summary-inference-db",
+                        help="inference-db entry for the summary model (defaults to --inference-db)")
     parser.add_argument("--context-budget", type=int, default=20_000,
                         help="soft context budget in tokens, shown to the model each turn (default: %(default)s)")
     parser.add_argument("--no-schema", action="store_true",
@@ -44,9 +47,18 @@ def _create_runner(args: argparse.Namespace) -> RunTask:
     from ._items import Item
     from ._loop import run
     from ._results import ResultStore
+    from ._summary import ContextSummarizer
 
     schema = agentknit.load_specification(args.model, inference_db=args.inference_db)
     client = agentknit.create_client(schema)
+    summarize = None
+    if args.summary_model:
+        summary_spec = agentknit.load_specification(
+            args.summary_model, inference_db=args.summary_inference_db or args.inference_db)
+        summarize = ContextSummarizer(
+            agentknit.create_client(summary_spec), summary_spec.get("model", args.summary_model),
+            dict(summary_spec.get("request_params") or {}),
+        )
     specs, tool_dispatch = agentknit.default_tool_spec()
     # file calls cover reads
     tool_specs: list[dict[str, Any]] = [s for s in specs if s["function"]["name"] != "read_file"]  # type: ignore[index]
@@ -62,7 +74,8 @@ def _create_runner(args: argparse.Namespace) -> RunTask:
         result = run(task, client, schema.get("model", args.model), tool_specs, tool_dispatch,
                      request_params=dict(schema.get("request_params") or {}),
                      max_turns=args.max_turns, log_path=log, schema=not args.no_schema,
-                     context_budget=args.context_budget, trace_context=args.trace_context, results=results,
+                     context_budget=args.context_budget, trace_context=args.trace_context, summarize=summarize,
+                     results=results,
                      items=items, start_turn=next_turn)
         items = result.items
         next_turn = result.turns + 1

@@ -86,10 +86,10 @@
       vertical-align: middle; border-bottom: 1px solid var(--line);
     }
     .comparison-table th:first-child { width: 42%; padding-left: 17px; text-align: left; }
-    .comparison-table th:last-child { width: 15%; }
+    .comparison-table th.delta { width: 15%; }
     .comparison-table thead { background: var(--inset); }
     .comparison-table tbody th { color: var(--muted); font-weight: 500; }
-    .comparison-table tbody td:last-child { color: var(--accent); }
+    .comparison-table tbody td.delta { color: var(--accent); }
     .comparison-note { padding: 9px 17px; color: var(--muted); font-size: .74rem; }
     .trace-controls { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     .trace-controls .mode { margin: 0; max-width: 100%; }
@@ -267,8 +267,7 @@
       <details class="comparison panel" id="comparison" open hidden>
         <summary>Run comparison</summary>
         <table class="comparison-table" aria-label="Run comparison">
-          <thead><tr><th scope="col">Metric</th><th scope="col" id="left-run"></th><th scope="col" id="right-run"></th>
-            <th scope="col" title="Right run minus left run">Change</th></tr></thead>
+          <thead><tr id="comparison-head"></tr></thead>
           <tbody id="comparison-rows"></tbody>
         </table>
         <p class="comparison-note" id="comparison-note"></p>
@@ -406,7 +405,8 @@
           const start = turn.messages.length;
           const assistant = following?.messages[start - 1];
           const resultsInPrompt = following?.turn === turn.turn + 1 && assistant?.role === 'assistant'
-            && (assistant.content === turn.reply || assistant.content === '[tool calls: ' + actions.length + ']');
+            && (assistant.content === turn.reply
+              || assistant.content.split('\n', 1)[0] === '[tool calls: ' + actions.length + ']');
           let nextPromptTokens = 0;
           for (const [offset, action] of actions.entries()) {
             if (action?.type === 'retrieve') {
@@ -482,9 +482,10 @@
             && message?.role === 'assistant'
             && /^\[(tool calls:|invalid reply\])/.test(message.content);
           if (replacesReply) {
+            const title = message.content === '[invalid reply]' ? 'Invalid reply placeholder'
+              : message.content.includes('\n') ? 'Tool-call summary' : 'Tool-call placeholder';
             return entry('message-' + i, {role: 'assistant', content: prior.reply}, message,
-              message.content === '[invalid reply]' ? 'Invalid reply placeholder' : 'Tool-call placeholder',
-              'Raw model reply');
+              title, 'Raw model reply');
           }
           return entry('message-' + i, oldHistory[i], message);
         });
@@ -711,23 +712,34 @@
       }
 
       function datasetName(dataset) {
-        return dataset.metadata.label || dataset.metadata.name;
+        const {label, name, summaryModel} = dataset.metadata;
+        return summaryModel ? (label || name) + ' (' + summaryModel + ')' : label || name;
       }
 
       function renderComparison() {
         const container = $('#comparison');
-        container.hidden = datasets.length !== 2;
+        container.hidden = datasets.length < 2;
         if (container.hidden) return;
-        const [left, right] = datasets;
-        $('#left-run').textContent = datasetName(left);
-        $('#right-run').textContent = datasetName(right);
+        const pair = datasets.length === 2;
+        const labels = ['Metric', ...datasets.map(datasetName)];
+        if (pair) labels.push('Change');
+        $('#comparison-head').replaceChildren(...labels.map((name, index) => {
+          const header = document.createElement('th');
+          header.scope = 'col';
+          header.textContent = name;
+          if (pair && index === 3) {
+            header.className = 'delta';
+            header.title = 'Right run minus left run';
+          }
+          return header;
+        }));
         const fields = [
           ['result', 'Benchmark verifier'],
           ['turns', 'Model requests'],
           ['toolCalls', 'File and tool calls'],
           ['retrieves', 'Retrieve calls'],
           ['reread', 'Re-read tokens (est.)'],
-          ['summaryTokens', 'Generated summary tokens (est.)'],
+          ['summaryTokens', 'Acting-model summary tokens (est.)'],
           ['promptPeak', 'Peak prompt characters'],
           ['promptTotal', 'Total prompt characters'],
           ['backendInput', 'Backend input tokens'],
@@ -742,20 +754,24 @@
           header.scope = 'row';
           header.textContent = name;
           row.append(header);
-          const a = left.metrics[key];
-          const b = right.metrics[key];
-          for (const value of [a, b]) {
+          const values = datasets.map(dataset => dataset.metrics[key]);
+          for (const value of values) {
             const cell = row.insertCell();
             if (Number.isFinite(value)) cell.className = 'mono';
             cell.textContent = Number.isFinite(value) ? format.format(value) : value || '—';
           }
-          const delta = row.insertCell();
-          delta.className = 'mono';
-          delta.textContent = Number.isFinite(a) && Number.isFinite(b) ? signed.format(b - a) : '—';
+          if (pair) {
+            const [a, b] = values;
+            const delta = row.insertCell();
+            delta.className = 'mono delta';
+            delta.textContent = Number.isFinite(a) && Number.isFinite(b) ? signed.format(b - a) : '—';
+          }
           return row;
         }));
-        const sameBridge = left.metadata.backend === 'Codex CLI' && right.metadata.backend === 'Codex CLI';
-        $('#comparison-note').textContent = 'Change is the right run minus the left. Re-read and summary tokens use four characters per token.'
+        const sameBridge = datasets.every(dataset => dataset.metadata.backend === 'Codex CLI');
+        $('#comparison-note').textContent = (pair ? 'Change is the right run minus the left. ' : '')
+          + 'Re-read and acting-model summary tokens use four characters per token.'
+          + ' Usage from separate summarizer requests is excluded.'
           + (sameBridge ? ' Backend totals include the Codex CLI wrapper.' : '');
       }
 
@@ -768,7 +784,7 @@
           button.setAttribute('aria-pressed', String(i === index));
         }
         const label = $('#run-label');
-        const parts = [metadata.name, metadata.model, metadata.label,
+        const parts = [metadata.name, metadata.model, metadata.label, metadata.summaryModel,
           turns.length + (turns.length === 1 ? ' turn' : ' turns')].filter(Boolean);
         label.replaceChildren(...parts.map(part => {
           const text = document.createElement('span');
@@ -848,7 +864,7 @@
       file.addEventListener('change', async () => {
         if (!file.files.length) return;
         try {
-          if (file.files.length > 2) throw new Error('Choose one or two JSONL traces.');
+          if (file.files.length > 3) throw new Error('Choose up to three JSONL traces.');
           load(await Promise.all([...file.files].map(readDataset)));
         } catch (error) {
           alert.textContent = error.message;

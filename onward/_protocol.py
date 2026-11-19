@@ -45,7 +45,7 @@ You are a coding agent. You act through structured tool calls.
 The task comes first. Conversation history follows in chronological order. The host represents past
 tool-call lists as `[tool calls: N]` without their arguments. Tool results and excerpts are visible
 for one model request. In later requests, `[result "id"]` and `[error "id"]` mark where they appeared.
-A placeholder can list several IDs if the call retrieved multiple results.
+A placeholder can list several IDs if the call retrieved multiple results.{summary_note}
 
 Each reply of yours is exactly one JSON object, nothing else:
 {{"tool_calls": [ {{"type": "file", "id": "source-v1", "file": "<path>", "lines": [<first>, <last>]}},
@@ -75,13 +75,16 @@ Tools:
 """
 
 
-def system_prompt(tool_specs: list[dict[str, Any]]) -> str:
+def system_prompt(tool_specs: list[dict[str, Any]], *, summarize_context: bool = False) -> str:
     """Constant across turns, so it never breaks the prompt-cache prefix."""
     tools = "\n".join(
         json.dumps({"name": t["function"]["name"], "description": t["function"]["description"],
                     "parameters": t["function"]["parameters"]})
         for t in tool_specs)
-    return SYSTEM_PROMPT.format(tools=tools)
+    summary_note = ("\n\nA separate model writes short notes under the tool-call and result markers. "
+                    "Use those notes to carry forward findings. Retrieve by ID when you need the exact output."
+                    if summarize_context else "")
+    return SYSTEM_PROMPT.format(tools=tools, summary_note=summary_note)
 
 
 def _json_object(reply: str) -> dict[str, Any]:

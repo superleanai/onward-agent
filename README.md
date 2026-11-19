@@ -18,8 +18,11 @@ Related work is surveyed in [PRIOR-ART.md](PRIOR-ART.md).
   arrives, the host replaces those results with placeholders such as `[result "source-v1"]` or
   `[error "tests-before"]`. This applies to retrieved results too. A placeholder for a batch
   retrieval lists the IDs it requested.
-- The host generates these placeholders from the call count, IDs, and result status. Calls and
-  results keep their place in the conversation, and full results remain available by ID.
+- The host generates these markers from the call count, IDs, and result status. Calls and results
+  keep their place in the conversation, and full results remain available by ID.
+- With a summary model configured, each compacted call or result entry keeps a short generated note
+  under its marker. The separate model summarizes the entire batch in one request. The run's usage
+  counts the acting model, including the notes it reads as context.
 
 ## Turn protocol
 
@@ -90,6 +93,7 @@ onward --json "make the tests pass"     # {"final", "turns", "items", "log"}
 echo "task" | onward                    # piped stdin remains one-shot
 onward --model k3.1-pro --inference-db kimi-coding --max-turns 50 --context-budget 20000 --log-dir runs "task"
 onward --trace-context "make the tests pass"  # include prompt messages in the run log
+onward --summary-model gpt-6-luna --trace-context "make the tests pass"
 ```
 
 With no arguments on a terminal, Onward starts a REPL. Each prompt runs a task in the same
@@ -101,6 +105,9 @@ Defaults: Kimi K3.1 Pro through agentknit's inference-db entry `kimi-coding`.
 In one-shot mode, exit code 0 means the model set `done`; 1 means `--max-turns` elapsed without an answer; 2 means an
 empty task. Tool output is streamed to stderr; stdout carries only the answer. `--no-schema` omits
 the turn schema for endpoints without `json_schema`. The context budget is a soft limit shown to the model.
+The summary model uses the acting model's inference-db entry by default. Set
+`--summary-inference-db` to use a different provider. The summary endpoint must support JSON
+schema responses.
 
 Each invocation writes `runs/<timestamp>.jsonl` and `runs/<timestamp>.results/`, shared by all tasks
 in a REPL. Result files contain the
@@ -124,7 +131,7 @@ table. Re-read tokens estimate the size of retrieval output that reached a later
 four characters per token with rounding per message. The viewer shows run totals and counts
 through the selected request or response.
 
-Select two JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
+Select up to three JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
 trace switch above the timeline to inspect either run at the selected step.
 
 ## Development
