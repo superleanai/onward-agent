@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary-model", help="use this separate model to summarize compacted context entries")
     parser.add_argument("--summary-inference-db",
                         help="inference-db entry for the summary model (defaults to --inference-db)")
+    parser.add_argument("--cache-stable-prefix", action="store_true",
+                        help="write only stable acting context to the cache and disable summary cache writes")
     parser.add_argument("--context-budget", type=int, default=20_000,
                         help="soft context budget in tokens, shown to the model each turn (default: %(default)s)")
     parser.add_argument("--no-schema", action="store_true",
@@ -44,20 +46,22 @@ def _create_runner(args: argparse.Namespace) -> RunTask:
     """Create one conversation runner; successive REPL tasks share context and result IDs."""
     import agentknit
 
+    from ._cache_client import create_cache_client
     from ._items import Item
     from ._loop import run
     from ._results import ResultStore
     from ._summary import ContextSummarizer
 
     schema = agentknit.load_specification(args.model, inference_db=args.inference_db)
-    client = agentknit.create_client(schema)
+    create_client = create_cache_client if args.cache_stable_prefix else agentknit.create_client
+    client = create_client(schema)
     summarize = None
     if args.summary_model:
         summary_spec = agentknit.load_specification(
             args.summary_model, inference_db=args.summary_inference_db or args.inference_db)
         summarize = ContextSummarizer(
-            agentknit.create_client(summary_spec), summary_spec.get("model", args.summary_model),
-            dict(summary_spec.get("request_params") or {}),
+            create_client(summary_spec), summary_spec.get("model", args.summary_model),
+            dict(summary_spec.get("request_params") or {}), cache_stable_prefix=args.cache_stable_prefix,
         )
     specs, tool_dispatch = agentknit.default_tool_spec()
     # file calls cover reads
@@ -75,8 +79,7 @@ def _create_runner(args: argparse.Namespace) -> RunTask:
                      request_params=dict(schema.get("request_params") or {}),
                      max_turns=args.max_turns, log_path=log, schema=not args.no_schema,
                      context_budget=args.context_budget, trace_context=args.trace_context, summarize=summarize,
-                     results=results,
-                     items=items, start_turn=next_turn)
+                     cache_stable_prefix=args.cache_stable_prefix, results=results, items=items, start_turn=next_turn)
         items = result.items
         next_turn = result.turns + 1
         return result, log
@@ -85,7 +88,10 @@ def _create_runner(args: argparse.Namespace) -> RunTask:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.cache_stable_prefix and not args.summary_model:
+        parser.error("--cache-stable-prefix requires --summary-model")
     interactive = args.task is None and sys.stdin.isatty()
     task = args.task if args.task is not None else "" if interactive else sys.stdin.read()
     if not interactive and not task.strip():

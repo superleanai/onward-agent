@@ -26,6 +26,7 @@ class ContextSummarizer:
     client: Client
     model: str
     request_params: dict[str, Any]
+    cache_stable_prefix: bool = False
 
     def __call__(self, task: str, entries: list[Item]) -> list[str]:
         numbered = {str(index): entry for index, entry in enumerate(entries, 1)}
@@ -53,6 +54,8 @@ class ContextSummarizer:
         params = {**self.request_params, "extra_body": {
             **self.request_params.get("extra_body", {}), "response_format": response_format,
         }}
+        if self.cache_stable_prefix:
+            params["cache_prefix"] = 0
         response = self.client.chat.completions.create(model=self.model, messages=messages, **params)
         reply = response.choices[0].message.content or ""
         try:

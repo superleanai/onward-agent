@@ -63,15 +63,46 @@ context-size reminder and turn instruction remain last.
 
 Cache hits are logged per turn as `usage.cached_tokens` when the provider reports them.
 
+### Cache only stable context
+
+`--cache-stable-prefix` works with `--summary-model`. The acting request places a single
+explicit breakpoint before the first raw result scheduled for summarization. The model still
+reads that result and the changing turn reminder in the same request. Once the result becomes
+a note, it can be included in the cacheable prefix. The separate summary requests run with
+prompt caching disabled.
+
+Configure direct API entries in inference-db. Each model can use either Anthropic Messages or
+OpenAI Responses, depending on which provider serves it.
+
+```toml
+[endpoints.anthropic]
+url = "https://api.anthropic.com/v1"
+key = [{ source = "env", var = "ANTHROPIC_API_KEY" }]
+
+[endpoints.openai]
+url = "https://api.openai.com/v1"
+key = [{ source = "env", var = "OPENAI_API_KEY" }]
+```
+
+```sh
+onward --inference-db anthropic --model claude-sonnet-5 \
+  --summary-inference-db openai --summary-model gpt-6-luna \
+  --cache-stable-prefix --no-schema --trace-context "make the tests pass"
+```
+
+The log includes `cache_prefix_messages`, the number of messages through the breakpoint,
+including the system prompt. `usage.cache_write_tokens` records provider-reported writes
+when available. The provider's minimum prefix length still applies.
+
 ## Implementation
 
 The `onward` package contains `_items.py` (context rendering), `_protocol.py` (system prompt,
 JSON schema, validation), `_loop.py` (turn execution), `_results.py` (disk-backed result store),
 `_repl.py` (interactive input), and `__main__.py` (CLI).
 
-agentknit (`../agentknit`, editable path dependency) supplies only the model client and tools
-(`write_file`, `str_replace`, `exec_shell`; reads use file calls). No agentknit session runs, so its
-compaction and awareness features do not alter this loop.
+agentknit (`../agentknit`, editable path dependency) supplies the default model client, endpoint
+configuration, and tools (`write_file`, `str_replace`, `exec_shell`). Reads use file calls.
+Onward manages the conversation and uses native provider requests in stable-prefix mode.
 
 Each request carries the constant turn schema as `response_format: json_schema`, with the argument
 schema of each available tool. Replies and tool arguments are also validated by the host because an

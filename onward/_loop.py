@@ -119,16 +119,20 @@ def _usage(response: Any) -> dict[str, Any] | None:
     cached = getattr(details, "cached_tokens", None) if details else None
     if cached is None:
         cached = getattr(usage, "cached_tokens", None)
-    return {"prompt_tokens": getattr(usage, "prompt_tokens", None),
-            "completion_tokens": getattr(usage, "completion_tokens", None),
-            "cached_tokens": cached}
+    record = {"prompt_tokens": getattr(usage, "prompt_tokens", None),
+              "completion_tokens": getattr(usage, "completion_tokens", None),
+              "cached_tokens": cached}
+    cache_write = getattr(usage, "cache_write_tokens", None)
+    if cache_write is not None:
+        record["cache_write_tokens"] = cache_write
+    return record
 
 
 def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         tool_dispatch: dict[str, Any], *, request_params: dict[str, Any] | None = None,
         max_turns: int = 50, log_path: Path | None = None, schema: bool = True,
         max_item_chars: int = 30_000, context_budget: int | None = None,
-        trace_context: bool = False, summarize: Summarize | None = None,
+        trace_context: bool = False, summarize: Summarize | None = None, cache_stable_prefix: bool = False,
         results_dir: Path | None = None, items: list[Item] | None = None,
         results: ResultStore | None = None, start_turn: int = 1) -> Result:
     """Run `task` until the model sets `done` or `max_turns` is reached.
@@ -152,7 +156,11 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
     try:
         for turn in range(start_turn, start_turn + max_turns):
             messages = render(items, system, context_budget)
-            response = client.chat.completions.create(model=model, messages=messages, **params)
+            # Position 0 in messages is the system prompt. The last message is the reminder.
+            prefix = next((i for i, item in enumerate(items, 1) if item.placeholder is not None),
+                          len(items) + 1) if cache_stable_prefix else None
+            turn_params = {**params, "cache_prefix": prefix} if prefix is not None else params
+            response = client.chat.completions.create(model=model, messages=messages, **turn_params)
             reply = _ECHOED_TAGS.sub("", response.choices[0].message.content or "")
             record: dict[str, Any] = {"turn": turn, "items_before": len(items),
                                       "usage": _usage(response),
@@ -161,6 +169,8 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
             if trace_context:
                 record["messages"] = messages
                 record["model"] = model
+            if prefix is not None:
+                record["cache_prefix_messages"] = prefix
             try:
                 out = parse(reply, tools)
             except ProtocolError as exc:

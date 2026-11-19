@@ -9,7 +9,7 @@ description = "Coding agent with structured tool calls and retrievable tool resu
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["agentknit[keyring]"]
+dependencies = ["agentknit[keyring]", "httpx"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "mypy", "ruff"]

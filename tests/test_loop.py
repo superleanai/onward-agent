@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from agentknit import default_tool_spec
 
+from onward._items import Item
 from onward._loop import run
 from onward._results import ResultStore
 from onward._summary import ContextSummarizer
@@ -253,3 +254,23 @@ def test_max_turns_returns_without_final(tools: Any, tmp_path: Path) -> None:
     assert "pending-output" in client.calls[1][3]["content"]
     assert client.calls[1][4]["content"] == "follow-up"
     assert second.items[2].content == '[result "call-first-0"]'
+
+
+def test_resumed_task_caches_only_before_the_pending_result(tools: Any, tmp_path: Path) -> None:
+    client = Scripted([
+        _r("first", [{"tool": "exec_shell", "args": {"command": "echo pending-output"}}]),
+        _r("second", done="ok"),
+    ])
+    store = ResultStore(tmp_path / "results")
+
+    def summarize(_task: str, entries: list[Item]) -> list[str]:
+        return ["Stable note." for _ in entries]
+
+    first = _run(client, tools, tmp_path, max_turns=1, results=store, summarize=summarize,
+                 cache_stable_prefix=True)
+    second = run("follow-up", client, "m", tools[0], tools[1], results=store, items=first.items,
+                 start_turn=2, summarize=summarize, cache_stable_prefix=True)
+    assert second.final == "ok"
+    assert [kwargs["cache_prefix"] for kwargs in client.kwargs] == [2, 3]
+    assert "pending-output" in client.calls[1][3]["content"]
+    assert client.calls[1][4]["content"] == "follow-up"
