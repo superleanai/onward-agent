@@ -89,6 +89,7 @@
       vertical-align: middle; border-bottom: 1px solid var(--line);
     }
     .comparison-table th:first-child { width: 42%; padding-left: 17px; text-align: left; }
+    .comparison[data-runs="4"] .comparison-table th:first-child { width: 29%; }
     .comparison[data-runs="5"] .comparison-table th:first-child { width: 24%; }
     .comparison-table th.delta { width: 15%; }
     .comparison-table thead { background: var(--inset); }
@@ -858,11 +859,12 @@
           return row;
         }));
         const usesBridge = datasets.some(dataset => dataset.metadata.backend === 'Codex CLI');
-        const directPair = datasets.filter(dataset => dataset.metadata.backend === 'OpenAI Responses API').length === 2;
+        const sameApiModel = datasets.every(dataset => dataset.metadata.backend === 'OpenAI Responses API'
+          && dataset.metadata.model === datasets[0].metadata.model);
         $('#comparison-note').textContent = (pair ? 'Change is the right run minus the left. ' : '')
           + 'Re-read and summary text in acting prompts use four characters per token.'
           + ' Usage from separate summarizer requests is excluded.'
-          + (directPair ? ' The two API runs use the same models and transport.' : '')
+          + (sameApiModel ? ' All runs use ' + datasets[0].metadata.model + ' through the OpenAI Responses API.' : '')
           + (usesBridge ? ' Codex CLI counts include its prompt wrapper.' : '');
       }
 
