@@ -65,6 +65,6 @@ class _OneAnswerClient:
     def __init__(self, task: str) -> None:
         from types import SimpleNamespace
 
-        reply = json.dumps({"summary": "done", "tool_calls": [], "done": f"{task} answer"})
+        reply = json.dumps({"tool_calls": [], "done": f"{task} answer"})
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))], usage=None)
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: response))

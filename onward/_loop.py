@@ -1,4 +1,4 @@
-"""The monotonic agent loop: durable summaries plus structured tool calls."""
+"""Execute structured tool calls and replace observations after one model request."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class Result:
 
 
 def _cap(item: Item, limit: int) -> Item:
-    """Keep head and tail of an over-long item, so one tool output cannot overflow the context window."""
+    """Keep the head and tail of a long observation."""
     if len(item.content) <= limit:
         return item
     half = limit // 2
@@ -88,11 +88,10 @@ def _execute(req: Request, tool_dispatch: dict[str, Any], specs: dict[str, dict[
 
 def _run_tool(req: Request, tool_dispatch: dict[str, Any], specs: dict[str, dict[str, Any]]) -> Item:
     assert not isinstance(req, FileRequest | RetrieveRequest)
-    header = f"{req.tool} {json.dumps(req.args)[:200]}"
     if problem := check_args(specs[req.tool], req.args):
-        return Item("error", f"{header}\nnot run: {problem}")
+        return Item("error", f"{req.tool}\nnot run: {problem}")
     text, meta = dispatch(req.tool, req.args, tool_dispatch)
-    return Item("error" if meta.get("ok") is False else "tool_result", f"{header}\n{text}")
+    return Item("error" if meta.get("ok") is False else "tool_result", f"{req.tool}\n{text}")
 
 
 def _usage(response: Any) -> dict[str, Any] | None:
@@ -117,7 +116,7 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         results: ResultStore | None = None, start_turn: int = 1) -> Result:
     """Run `task` until the model sets `done` or `max_turns` is reached.
 
-    Every valid model reply is appended verbatim, making its `summary` durable.
+    Call placeholders are recorded immediately. Results are replaced after the model sees them once.
     `schema` sends the turn schema as `response_format` (the endpoint must accept `json_schema`).
     Existing `items`, `results`, and `start_turn` let a REPL continue one conversation.
     """
@@ -137,6 +136,8 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         for turn in range(start_turn, start_turn + max_turns):
             response = client.chat.completions.create(
                 model=model, messages=render(items, system, context_budget), **params)
+            items = [Item(item.kind, item.placeholder) if item.placeholder is not None else item
+                     for item in items]
             reply = _ECHOED_TAGS.sub("", response.choices[0].message.content or "")
             record: dict[str, Any] = {"turn": turn, "items_before": len(items),
                                       "usage": _usage(response),
@@ -145,23 +146,30 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
             try:
                 out = parse(reply, tools)
             except ProtocolError as exc:
-                items = items + [Item("model_output", reply), Item("error", f"protocol error: {exc}")]
+                items.extend([Item("model_output", "[invalid reply]"),
+                              Item("error", f"protocol error: {exc}")])
                 record["error"] = str(exc)
             else:
-                record["summary"] = out.summary
                 if out.done is not None:
-                    items = items + [Item("model_output", reply)]
+                    items.append(Item("model_output", json.dumps({"tool_calls": [], "done": out.done})))
                     record["items_after"] = len(items)
                     if log:
                         log.write(json.dumps(record) + "\n")
                     return Result(out.done, items, turn)
-                new = [item if isinstance(call, RetrieveRequest) else _cap(item, max_item_chars)
-                       for call in out.tool_calls
-                       for item in [_execute(call, tool_dispatch, specs, results)]]
-                items = items + [Item("model_output", reply)] + new
-                record["new_items"] = [[item.kind, tokens(item.content), call.id]
-                                       for item, call in zip(new, out.tool_calls, strict=True)
-                                       if not isinstance(call, RetrieveRequest)]
+                items.append(Item("model_output", f"[tool calls: {len(out.tool_calls)}]"))
+                new_items: list[list[str | int]] = []
+                for call in out.tool_calls:
+                    item = _execute(call, tool_dispatch, specs, results)
+                    if isinstance(call, RetrieveRequest):
+                        ids = call.ids
+                    else:
+                        ids = (call.id,)
+                        item = _cap(item, max_item_chars)
+                        new_items.append([item.kind, tokens(item.content), call.id])
+                    label = "error" if item.kind == "error" else "result"
+                    references = ", ".join(json.dumps(id_) for id_ in ids)
+                    items.append(Item(item.kind, item.content, f"[{label} {references}]"))
+                record["new_items"] = new_items
             record["items_after"] = len(items)
             if log:
                 log.write(json.dumps(record) + "\n")

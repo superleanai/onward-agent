@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "onward"
 version = "0.1.0"
-description = "Monotonic coding agent with durable per-turn summaries and structured tool calls."
+description = "Coding agent with structured tool calls and retrievable tool results."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

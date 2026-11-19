@@ -1,4 +1,4 @@
-"""onward: an append-only coding agent with durable turn summaries."""
+"""onward: a coding agent with tool-result placeholders and retrieval."""
 
 from __future__ import annotations
 

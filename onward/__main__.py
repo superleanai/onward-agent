@@ -1,4 +1,4 @@
-"""onward: run a coding task with durable summaries and structured tool calls."""
+"""onward: run a coding task with structured tools and retrievable tool results."""
 
 from __future__ import annotations
 

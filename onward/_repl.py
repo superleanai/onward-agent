@@ -1,4 +1,4 @@
-"""Interactive REPL for a persistent, append-only Onward conversation."""
+"""Interactive REPL for a persistent Onward conversation."""
 
 from __future__ import annotations
 

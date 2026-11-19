@@ -19,15 +19,14 @@ TOOLS = {"exec_shell", "write_file"}
 
 
 def _reply(**kw: object) -> str:
-    return json.dumps({"summary": "previous turn did t", "tool_calls": [], "done": None} | kw)
+    return json.dumps({"tool_calls": [], "done": None} | kw)
 
 
-def test_parses_summary_and_tool_calls_in_order() -> None:
+def test_parses_tool_calls_in_order() -> None:
     out = parse(_reply(tool_calls=[
         {"type": "tool", "id": "shell", "tool": "exec_shell", "args": {"command": "ls"}},
         {"type": "file", "id": "file-a", "file": "a.py", "lines": [3, 9]},
         {"type": "file", "id": "file-b", "file": "b.py"}]), TOOLS)
-    assert out.summary == "previous turn did t"
     assert out.tool_calls == [ToolRequest("exec_shell", {"command": "ls"}, "shell"),
                               FileRequest("a.py", (3, 9), "file-a"), FileRequest("b.py", None, "file-b")]
 
@@ -51,18 +50,13 @@ def test_identifier_is_mandatory() -> None:
 
 
 def test_json_surrounded_by_text_is_accepted() -> None:
-    assert parse("model output\n" + _reply() + "\n", TOOLS).summary == "previous turn did t"
+    assert parse("model output\n" + _reply(done="ok") + "\n", TOOLS).done == "ok"
 
 
-@pytest.mark.parametrize("summary", [None, "", "  ", 3, True, []])
-def test_summary_must_be_nonempty_string(summary: object) -> None:
-    with pytest.raises(ProtocolError, match="summary"):
-        parse(_reply(summary=summary), TOOLS)
-
-
-def test_missing_summary_rejected() -> None:
-    with pytest.raises(ProtocolError, match="summary"):
-        parse('{"tool_calls": [], "done": null}', TOOLS)
+@pytest.mark.parametrize("reply", ['{"tool_calls": []}', '{"done": null}'])
+def test_both_reply_fields_are_required(reply: str) -> None:
+    with pytest.raises(ProtocolError, match="requires tool_calls and done"):
+        parse(reply, TOOLS)
 
 
 @pytest.mark.parametrize("call", [
@@ -95,26 +89,24 @@ def test_done() -> None:
     assert parse(_reply(done="fixed"), TOOLS).done == "fixed"
 
 
-def test_system_prompt_is_monotonic_and_lists_tools() -> None:
+def test_system_prompt_explains_placeholders_and_lists_tools() -> None:
     spec = [{"type": "function", "function": {"name": "exec_shell", "description": "run",
                                               "parameters": {"type": "object"}}}]
     prompt = system_prompt(spec)
     assert '"name": "exec_shell"' in prompt
-    assert "cannot backtrack" in prompt
-    assert "durable context" in prompt
-    assert "numbered" in prompt
+    assert "[tool calls: N]" in prompt
+    assert '[result "id"]' in prompt
+    assert "for one model request" in prompt
 
 
 SPECS = [{"type": "function", "function": {"name": "exec_shell", "description": "run", "parameters": {
     "type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}}]
 
 
-def test_turn_schema_has_summary_and_one_branch_per_tool() -> None:
+def test_turn_schema_has_two_reply_fields_and_one_branch_per_tool() -> None:
     js = turn_schema(SPECS)
-    assert js["required"] == ["summary", "tool_calls", "done"]
-    assert js["properties"]["summary"]["minLength"] == 1
-    assert "max_index" not in js["properties"]
-    assert "requests" not in js["properties"]
+    assert js["required"] == ["tool_calls", "done"]
+    assert js["properties"].keys() == {"tool_calls", "done"}
     branches = js["properties"]["tool_calls"]["items"]["anyOf"]
     file_branch, tool_branch, retrieve_branch = branches
     assert file_branch["properties"]["id"]["type"] == "string"
@@ -138,7 +130,7 @@ def test_check_args() -> None:
 
 
 def test_schema_shaped_reply_parses() -> None:
-    reply = json.dumps({"summary": "s", "done": None,
+    reply = json.dumps({"done": None,
                         "tool_calls": [{"type": "file", "id": "f", "file": "a", "lines": None},
                                        {"type": "tool", "id": "x", "tool": "exec_shell", "args": {}}]})
     assert parse(reply, TOOLS).tool_calls == [FileRequest("a", None, "f"), ToolRequest("exec_shell", {}, "x")]

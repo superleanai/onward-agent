@@ -1,27 +1,25 @@
 # Onward
 
-A coding agent with a cache-aware, self-summarizing context loop.
+A coding agent that keeps tool results in context for one model request and stores them for retrieval.
 
-Core concept: at every turn the model writes a durable summary of the previous turn and an ordered
-list of structured tool calls. Model-assigned tool-call IDs make every stored result addressable and
-retrievable without rerunning the tool.
-
-This differs from traditional coding agents, which keep everything in the context, and from its
-predecessor selfctx, whose numbered context can be truncated and backtracked.
+The model requests an ordered list of structured tool calls. The host generates placeholders for
+calls and older results. Model-assigned IDs let the model retrieve complete results without
+rerunning the tools.
 
 Related work is surveyed in [PRIOR-ART.md](PRIOR-ART.md).
 
 ## Context model
 
-- The first task is the first message after the system prompt. In the REPL, later tasks are appended
-  to the same conversation. Model replies, observations, and errors are appended chronologically and
-  never edited, removed, or reordered.
-- A model reply contains a `summary`; the complete reply is appended verbatim, so every summary is
-  durable context available on all later turns. The summary is also recorded separately in the run log.
-- The first turn has no previous turn to summarize. Its summary records the model's initial
-  understanding and approach instead.
-- Tool calls do not have hidden results: their outputs are appended before the next turn. A summary
-  therefore reports outcomes from the previous turn, not outcomes of calls being requested now.
+- The first task follows the system prompt. Later REPL tasks, answers, and tool entries remain in
+  chronological order.
+- After receiving a tool-call list, the host adds a `[tool calls: N]` placeholder to the context
+  immediately and records the original reply in the run log.
+- The next model request includes the new tool results, in call order. As soon as that model reply
+  arrives, the host replaces those results with placeholders such as `[result "source-v1"]` or
+  `[error "tests-before"]`. This applies to retrieved results too. A placeholder for a batch
+  retrieval lists the IDs it requested.
+- The host generates these placeholders from the call count, IDs, and result status. Calls and
+  results keep their place in the conversation, and full results remain available by ID.
 
 ## Turn protocol
 
@@ -29,7 +27,6 @@ Each model response is one JSON object:
 
 ```json
 {
-  "summary": "What the previous turn established or changed, and the resulting next step",
   "tool_calls": [
     {"type": "file", "id": "source-v1", "file": "path/to/file.py", "lines": [10, 40]},
     {"type": "tool", "id": "tests-before", "tool": "exec_shell", "args": {"command": "pytest -q"}},
@@ -39,8 +36,6 @@ Each model response is one JSON object:
 }
 ```
 
-- `summary` is a required, non-empty string. It should preserve exact facts needed later without
-  unnecessarily repeating observations that remain in context.
 - `tool_calls` is an ordered list of file excerpts, tool calls, and retrievals. Every entry has an
   explicit `type`: `file`, `tool`, or `retrieve`. The host executes all of them and appends one
   result per call in the listed order. A file call's line range is 1-based and inclusive;
@@ -53,25 +48,21 @@ Each model response is one JSON object:
   stored on disk, not in RAM; only the small ID/path index stays in memory.
 - `done` is normally `null`. A string ends the run with that final answer; tool calls are then ignored.
 
-Malformed output and invalid tool calls produce appended error context. The model can correct itself
-on a later turn, but no operation can remove or rewrite earlier context.
+Malformed output produces a placeholder and a protocol error in context. The original reply is
+available in the run log. The next request lets the model correct the error.
 
 ## Caching awareness
 
-The request is cache-friendly by construction:
-
-- The system prompt and structured-output schema are constant across turns.
-- One chat message is used per task, model reply, file excerpt, tool result, or error. Once sent,
-  every such message remains byte-identical.
-- New entries are appended at the end. There is no cut or rewrite that could invalidate an earlier
-  prompt-cache prefix.
-- The changing context-size reminder and turn instruction are in the final message only.
+Replacing the previous turn's results shortens the prompt and breaks cache reuse from the first
+replaced result onward. The system prompt, schema, and earlier placeholders are stable. Once a
+result becomes a placeholder, future requests can reuse that part of the prefix. The changing
+context-size reminder and turn instruction remain last.
 
 Cache hits are logged per turn as `usage.cached_tokens` when the provider reports them.
 
 ## Implementation
 
-The `onward` package contains `_items.py` (append-only rendering), `_protocol.py` (system prompt,
+The `onward` package contains `_items.py` (context rendering), `_protocol.py` (system prompt,
 JSON schema, validation), `_loop.py` (turn execution), `_results.py` (disk-backed result store),
 `_repl.py` (interactive input), and `__main__.py` (CLI).
 
@@ -101,25 +92,24 @@ onward --model k3.1-pro --inference-db kimi-coding --max-turns 50 --context-budg
 ```
 
 With no arguments on a terminal, Onward starts a REPL. Each prompt runs a task in the same
-append-only conversation, preserving prior context and tool-result IDs. Enter `exit`, `quit`, `q`,
+conversation, preserving earlier tasks, answers, and tool-result IDs. Enter `exit`, `quit`, `q`,
 or Ctrl-D to quit; blank input is ignored. `--max-turns` is per task. In JSON mode, each answer is a
 separate JSON document; prompts and diagnostics stay on stderr.
 
 Defaults: Kimi K3.1 Pro through agentknit's inference-db entry `kimi-coding`.
 In one-shot mode, exit code 0 means the model set `done`; 1 means `--max-turns` elapsed without an answer; 2 means an
 empty task. Tool output is streamed to stderr; stdout carries only the answer. `--no-schema` omits
-the turn schema for endpoints without `json_schema`. The context budget is soft and informational;
-the host never truncates context.
+the turn schema for endpoints without `json_schema`. The context budget is a soft limit shown to the model.
 
 Each invocation writes `runs/<timestamp>.jsonl` and `runs/<timestamp>.results/`, shared by all tasks
 in a REPL. Result files contain the
 full JSON-encoded observations; `index.jsonl` maps IDs to files. Each turn record contains: `turn`, `items_before`, `items_after`,
-`summary`, `new_items` (kind, estimated tokens, and model-assigned ID when present), `usage` (`prompt_tokens`,
+`new_items` (kind, estimated tokens, and ID for new file or tool results), `usage` (`prompt_tokens`,
 `completion_tokens`, `cached_tokens`), `finish_reason`, `reply`, and `error` when the reply broke the
-protocol. On a protocol error, `summary` and `new_items` are absent.
+protocol. `new_items` is present for valid turns that continue the task.
 
 ```sh
-jq -c '{turn, summary, items_before, items_after, cached: .usage.cached_tokens}' runs/*.jsonl
+jq -c '{turn, items_before, items_after, prompt: .usage.prompt_tokens, cached: .usage.cached_tokens}' runs/*.jsonl
 ```
 
 ## Development
@@ -128,6 +118,6 @@ jq -c '{turn, summary, items_before, items_after, cached: .usage.cached_tokens}'
 .venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy onward
 ```
 
-The tests use a scripted fake model. They cover required summaries, structured tool-call validation,
-chronological execution, error recovery, completion, and byte-identical cached prefixes across turns.
+The tests use a scripted fake model. They cover structured tool-call validation, chronological
+execution, error recovery, completion, and the lifetime of results and placeholders in the prompt.
 `tests/fixtures/buggy/` is a small project with failing tests for live runs.

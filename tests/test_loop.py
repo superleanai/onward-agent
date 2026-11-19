@@ -9,6 +9,7 @@ import pytest
 from agentknit import default_tool_spec
 
 from onward._loop import run
+from onward._results import ResultStore
 
 
 class Scripted:
@@ -27,15 +28,15 @@ class Scripted:
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=None)
 
 
-def _r(summary: str, tool_calls: list[dict[str, Any]] | None = None, done: str | None = None) -> str:
+def _r(label: str, tool_calls: list[dict[str, Any]] | None = None, done: str | None = None) -> str:
     calls = []
     for n, call in enumerate(tool_calls or []):
         call_type = "retrieve" if "retrieve" in call else "file" if "file" in call else "tool"
         call = {"type": call_type, **call}
         if "retrieve" not in call:
-            call = {"id": f"call-{summary}-{n}", **call}
+            call = {"id": f"call-{label}-{n}", **call}
         calls.append(call)
-    return json.dumps({"summary": summary, "tool_calls": calls, "done": done})
+    return json.dumps({"tool_calls": calls, "done": done})
 
 
 @pytest.fixture
@@ -48,34 +49,36 @@ def _run(client: Scripted, tools: Any, tmp_path: Path, **kw: Any) -> Any:
     return run("task", client, "m", tools[0], tools[1], log_path=tmp_path / "log.jsonl", **kw)
 
 
-def test_summaries_accumulate_and_tools_run(tools: Any, tmp_path: Path) -> None:
+def test_calls_are_compacted_immediately_and_results_after_one_request(tools: Any, tmp_path: Path) -> None:
     client = Scripted([
-        _r("initial approach", [{"tool": "exec_shell", "args": {"command": "echo a"}}]),
-        _r("previous command printed a", [{"tool": "exec_shell", "args": {"command": "echo b"}}]),
-        _r("previous command printed b", done="ok")])
+        _r("a", [{"tool": "exec_shell", "args": {"command": "echo first-output"}}]),
+        _r("b", [{"tool": "exec_shell", "args": {"command": "echo second-output"}}]),
+        _r("final", done="ok")])
     result = _run(client, tools, tmp_path)
     assert result.final == "ok" and result.turns == 3
-    # Turn 3 contains both earlier summaries and both observations, in chronological order.
+    turn_two = [m["content"] for m in client.calls[1]]
+    assert turn_two[2] == "[tool calls: 1]"
+    assert "first-output" in turn_two[3]
+    assert all("echo first-output" not in content for content in turn_two)
     contents = [m["content"] for m in client.calls[2]]
-    assert contents[1] == "task"
-    assert json.loads(contents[2])["summary"] == "initial approach"
-    assert "echo a" in contents[3]
-    assert json.loads(contents[4])["summary"] == "previous command printed a"
-    assert "echo b" in contents[5]
-    assert len(result.items) == 6  # final model output is appended too
+    assert contents[1:5] == ["task", "[tool calls: 1]", '[result "call-a-0"]', "[tool calls: 1]"]
+    assert "second-output" in contents[5]
+    assert result.items[-2].content == '[result "call-b-0"]'
+    assert len(result.items) == 6
 
 
-def test_every_previous_message_is_byte_identical(tools: Any, tmp_path: Path) -> None:
+def test_cache_prefix_breaks_at_each_replaced_batch(tools: Any, tmp_path: Path) -> None:
     client = Scripted([
         _r("first", [{"tool": "exec_shell", "args": {"command": "echo a"}}]),
         _r("second", [{"tool": "exec_shell", "args": {"command": "echo b"}}]),
-        _r("third", done="ok")])
+        _r("third"),
+        _r("fourth", done="ok")])
     _run(client, tools, tmp_path)
     assert client.calls[1][:-3] == client.calls[0][:-1]
-    assert client.calls[2][:-3] == client.calls[1][:-1]
-    # The only changed message is the final cache-friendly instruction.
-    assert client.calls[0][-1]["content"] != client.calls[1][-1]["content"]
-    assert client.calls[0][0] == client.calls[2][0]
+    assert client.calls[2][:3] == client.calls[1][:3]
+    assert client.calls[2][3] != client.calls[1][3]
+    assert client.calls[3][:5] == client.calls[2][:5]
+    assert client.calls[3][5] != client.calls[2][5]
 
 
 def test_tool_calls_appended_in_listed_order(tools: Any, tmp_path: Path) -> None:
@@ -105,11 +108,17 @@ def test_file_call_allows_edit(tools: Any, tmp_path: Path) -> None:
 
 
 def test_protocol_error_is_appended_without_losing_history(tools: Any, tmp_path: Path) -> None:
-    client = Scripted(['{"thoughts": "old protocol"}', _r("recovered", done="ok")])
+    malformed = _r("bad", [{"tool": "exec_shell", "args": "bad payload"}])
+    client = Scripted([
+        _r("before-error", [{"tool": "exec_shell", "args": {"command": "echo prior-output"}}]),
+        malformed,
+        _r("recovered", done="ok")])
     result = _run(client, tools, tmp_path)
     assert result.final == "ok"
-    assert client.calls[1][2] == {"role": "assistant", "content": '{"thoughts": "old protocol"}'}
-    assert "summary must be a non-empty string" in client.calls[1][3]["content"]
+    contents = [m["content"] for m in client.calls[2]]
+    assert contents[3:6] == ['[result "call-before-error-0"]', "[invalid reply]",
+                             "protocol error: tool call: args must be an object"]
+    assert all("bad payload" not in content and "prior-output" not in content for content in contents)
 
 
 def test_done_ignores_tool_calls(tools: Any, tmp_path: Path) -> None:
@@ -119,18 +128,19 @@ def test_done_ignores_tool_calls(tools: Any, tmp_path: Path) -> None:
     result = _run(client, tools, tmp_path)
     assert result.final == "ok"
     assert not marker.exists()
+    assert json.loads(result.items[-1].content) == {"tool_calls": [], "done": "ok"}
 
 
-def test_log_contains_durable_summary_and_new_items(tools: Any, tmp_path: Path) -> None:
+def test_log_contains_original_reply_and_new_items(tools: Any, tmp_path: Path) -> None:
     client = Scripted([
         _r("run a", [{"tool": "exec_shell", "args": {"command": "echo a"}}]),
         _r("a worked", done="ok")])
     _run(client, tools, tmp_path)
     records = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
-    assert records[0]["summary"] == "run a"
+    assert "summary" not in records[0]
+    assert json.loads(records[0]["reply"])["tool_calls"][0]["args"] == {"command": "echo a"}
     assert records[0]["new_items"][0][0] == "tool_result"
-    assert records[1]["summary"] == "a worked"
-    assert "max_index" not in records[0]
+    assert json.loads(records[1]["reply"])["done"] == "ok"
 
 
 def test_model_ids_label_results_and_retrieve_past_full_results(tools: Any, tmp_path: Path) -> None:
@@ -138,15 +148,19 @@ def test_model_ids_label_results_and_retrieve_past_full_results(tools: Any, tmp_
         _r("make initial observations", [
             {"id": "shell-a", "tool": "exec_shell", "args": {"command": "echo a"}},
             {"id": "shell-b", "tool": "exec_shell", "args": {"command": "echo b"}}]),
-        _r("initial results are stored", [{"retrieve": "shell-a"}]),
+        _r("wait"),
+        _r("fetch old results", [{"retrieve": ["shell-a", "shell-b"]}]),
         _r("retrieved shell-a", done="ok")])
     result = _run(client, tools, tmp_path)
-    assert client.calls[1][3]["content"].startswith("<shell-a>\nexec_shell ")
-    assert client.calls[1][4]["content"].startswith("<shell-b>\nexec_shell ")
-    retrieved = client.calls[2][-2]["content"]
-    assert retrieved.startswith("<shell-a>\nexec_shell ")
+    first = client.calls[1][3]["content"]
+    second = client.calls[1][4]["content"]
+    assert first.startswith("<shell-a>\nexec_shell\n")
+    assert second.startswith("<shell-b>\nexec_shell\n")
+    assert [m["content"] for m in client.calls[2][3:5]] == ['[result "shell-a"]', '[result "shell-b"]']
+    retrieved = client.calls[3][-2]["content"]
+    assert retrieved == f"{first}\n\n{second}"
     assert retrieved.endswith('"returncode":0}')
-    assert result.items[-2].content == retrieved
+    assert result.items[-2].content == '[result "shell-a", "shell-b"]'
 
 
 def test_retrieval_does_not_rerun_tool(tools: Any, tmp_path: Path) -> None:
@@ -181,14 +195,24 @@ def test_unknown_or_duplicate_ids_become_result_errors(tools: Any, tmp_path: Pat
         _r("duplicate id", [{"id": "dup", "tool": "exec_shell", "args": {"command": "echo one"}},
                              {"id": "dup", "tool": "exec_shell", "args": {"command": "echo two"}}]),
         _r("finished", done="ok")])
-    _run(client, tools, tmp_path)
+    result = _run(client, tools, tmp_path)
     assert "unknown tool-call id 'missing'" in client.calls[1][3]["content"]
+    assert client.calls[2][3]["content"] == '[error "missing"]'
     assert "not run: duplicate tool-call id 'dup'" in client.calls[2][-2]["content"]
+    assert result.items[-2].content == '[error "dup"]'
     records = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
     assert records[1]["new_items"][0][2] == "dup"
 
 
 def test_max_turns_returns_without_final(tools: Any, tmp_path: Path) -> None:
-    client = Scripted([_r("continue")])
-    result = _run(client, tools, tmp_path, max_turns=1)
-    assert result.final is None and result.turns == 1
+    client = Scripted([
+        _r("first", [{"tool": "exec_shell", "args": {"command": "echo pending-output"}}]),
+        _r("second", done="ok")])
+    store = ResultStore(tmp_path / "results")
+    first = _run(client, tools, tmp_path, max_turns=1, results=store)
+    assert first.final is None and first.turns == 1
+    second = run("follow-up", client, "m", tools[0], tools[1], results=store, items=first.items, start_turn=2)
+    assert second.final == "ok" and second.turns == 2
+    assert "pending-output" in client.calls[1][3]["content"]
+    assert client.calls[1][4]["content"] == "follow-up"
+    assert second.items[2].content == '[result "call-first-0"]'

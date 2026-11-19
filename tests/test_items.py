@@ -4,7 +4,7 @@ from onward._items import Item, render
 
 
 def _ctx() -> list[Item]:
-    return [Item("task", "fix it"), Item("model_output", '{"summary": "start"}'),
+    return [Item("task", "fix it"), Item("model_output", "[tool calls: 1]"),
             Item("tool_result", "ls output")]
 
 
@@ -12,7 +12,7 @@ def test_render_has_no_item_numbers() -> None:
     messages = render(_ctx(), "SYS")
     assert messages[0] == {"role": "system", "content": "SYS"}
     assert [m["content"] for m in messages[1:-1]] == [
-        "fix it", '{"summary": "start"}', "ls output"]
+        "fix it", "[tool calls: 1]", "ls output"]
     assert all(not m["content"].startswith("[0]") for m in messages)
 
 
@@ -29,8 +29,7 @@ def test_appending_preserves_every_previous_message_byte_for_byte() -> None:
 def test_status_is_last_and_reports_size_budget_and_required_fields() -> None:
     messages = render(_ctx(), "S", budget=20000)
     assert messages[-1]["role"] == "user"
-    assert messages[-1]["content"].startswith("[context] 3 entries, ~10 tokens (budget ~20000 tokens)")
-    assert "`summary`" in messages[-1]["content"]
+    assert messages[-1]["content"].startswith("[context] 3 entries, ~9 tokens (budget ~20000 tokens)")
     assert "`tool_calls`" in messages[-1]["content"]
     assert "`done`" in messages[-1]["content"]
 

@@ -1,4 +1,4 @@
-"""The structured turn protocol: summarize the previous turn and request tools."""
+"""The structured turn protocol for tool requests and final answers."""
 
 from __future__ import annotations
 
@@ -35,49 +35,38 @@ Request = FileRequest | ToolRequest | RetrieveRequest
 
 @dataclass(frozen=True)
 class Output:
-    summary: str
     tool_calls: list[Request]
     done: str | None
 
 
 SYSTEM_PROMPT = """\
-You are a coding agent. You write durable summaries and act through structured tool calls.
+You are a coding agent. You act through structured tool calls.
 
-Your context grows by appending only. Nothing is numbered, edited, removed, or reordered, and you
-cannot backtrack. The task comes first. It is followed by earlier model replies, file excerpts,
-tool results, and errors in chronological order.
+The task comes first. Conversation history follows in chronological order. The host represents past
+tool-call lists as `[tool calls: N]` without their arguments. Tool results and excerpts are visible
+for one model request. In later requests, `[result "id"]` and `[error "id"]` mark where they appeared.
+A placeholder can list several IDs if the call retrieved multiple results.
 
 Each reply of yours is exactly one JSON object, nothing else:
-{{"summary": "<summary of the previous turn>",
- "tool_calls": [ {{"type": "file", "id": "source-v1", "file": "<path>", "lines": [<first>, <last>]}},
+{{"tool_calls": [ {{"type": "file", "id": "source-v1", "file": "<path>", "lines": [<first>, <last>]}},
                  {{"type": "tool", "id": "tests-before", "tool": "<name>", "args": {{...}}}},
                  {{"type": "retrieve", "retrieve": "tests-before"}} ],
  "done": null}}
-
-"summary" is long-term durable context. It is appended verbatim and remains in every later turn.
-At turn 1 there is no previous turn, so explain your initial understanding and approach instead.
-After that, summarize what the previous turn established or changed: your action or reasoning, the
-tool outcome, important file contents or errors, and the resulting next step. Include exact facts
-needed later; do not merely say that a tool ran. Never invent an outcome for a call not yet run.
-The raw replies, observations, and all summaries remain visible, so do not repeat them at length.
 
 "tool_calls" is an ordered list. Every entry has a "type": "file", "tool", or "retrieve". The
 host executes every call and appends its result before the next turn, in the order listed. Give
 every file or tool call a unique, descriptive "id" string of your choice; it is mandatory. The
 result is headed `<your-id>` and stored on disk, including when the visible result was shortened.
-Later, {{"type": "retrieve", "retrieve": "your-id"}} appends that exact full stored result without
-rerunning the tool. Use this when you need a past result again. Retrieval is not file editing or
-backtracking: it only appends a copy and never removes context.
+Later, {{"type": "retrieve", "retrieve": "your-id"}} shows the full stored result for one request
+without rerunning the tool. Use this when you need a past result again. You can supply a list of
+IDs to see several past results in one request.
 
 A file call appends an excerpt with 1-based, inclusive line numbers ("lines": null gives the first
 100 lines). It also registers a read required before editing an existing file. A tool call runs the
 named tool with "args" and appends its result. Do not rerun a call merely to see its old output:
 retrieve it by id. Make a fresh call when you need to verify fresh state.
 
-Your context has a cost: every entry is re-read each turn, and a long context dilutes attention.
-The last message gives its size and soft budget. Keep summaries compact but complete. Earlier
-messages are never rewritten and the changing instruction is last, preserving the prompt-cache
-prefix across turns.
+The last message gives the estimated context size and soft budget.
 
 When the task is finished, set "done" to your final answer for the user and "tool_calls" to [].
 
@@ -110,9 +99,9 @@ def _json_object(reply: str) -> dict[str, Any]:
 
 def _request(raw: Any, tools: set[str]) -> Request:
     if not isinstance(raw, dict):
-        raise ProtocolError(f"tool call {raw!r} is not an object")
+        raise ProtocolError("each tool call must be an object")
     type_ = raw.get("type")
-    if type_ not in {"file", "tool", "retrieve"}:
+    if type_ not in ("file", "tool", "retrieve"):
         raise ProtocolError("type must be exactly 'file', 'tool', or 'retrieve'")
     if type_ == "retrieve":
         if "retrieve" not in raw:
@@ -132,39 +121,36 @@ def _request(raw: Any, tools: set[str]) -> Request:
             raise ProtocolError("file call requires file")
         path, lines = raw["file"], raw.get("lines")
         if not isinstance(path, str):
-            raise ProtocolError(f"file call {raw!r}: file must be a string")
+            raise ProtocolError("file call requires a string path")
         if lines is None:
             return FileRequest(path, None, id_)
         if (not isinstance(lines, list) or len(lines) != 2
                 or not all(isinstance(n, int) and not isinstance(n, bool) for n in lines)
                 or not 1 <= lines[0] <= lines[1]):
-            raise ProtocolError(f"file call {raw!r}: lines must be [first, last] with 1 <= first <= last")
+            raise ProtocolError("file call: lines must be [first, last] with 1 <= first <= last")
         return FileRequest(path, (lines[0], lines[1]), id_)
-    if type_ == "tool":
-        if "tool" not in raw:
-            raise ProtocolError("tool call requires tool")
-        name, args = raw["tool"], raw.get("args", {})
-        if name not in tools:
-            raise ProtocolError(f"unknown tool {name!r}; available: {', '.join(sorted(tools))}")
-        if not isinstance(args, dict):
-            raise ProtocolError(f"tool call {raw!r}: args must be an object")
-        return ToolRequest(name, args, id_)
-    raise ProtocolError(f"tool call {raw!r} has neither 'file', 'tool', nor 'retrieve'")
+    if "tool" not in raw:
+        raise ProtocolError("tool call requires tool")
+    name, args = raw["tool"], raw.get("args", {})
+    if not isinstance(name, str) or name not in tools:
+        raise ProtocolError(f"unknown tool; available: {', '.join(sorted(tools))}")
+    if not isinstance(args, dict):
+        raise ProtocolError("tool call: args must be an object")
+    return ToolRequest(name, args, id_)
 
 
 def parse(reply: str, tools: set[str]) -> Output:
     """Parse and validate a reply against the available tools."""
     data = _json_object(reply)
-    summary = data.get("summary")
-    if not isinstance(summary, str) or not summary.strip():
-        raise ProtocolError("summary must be a non-empty string")
-    raw_calls = data.get("tool_calls", [])
+    if "tool_calls" not in data or "done" not in data:
+        raise ProtocolError("reply requires tool_calls and done")
+    raw_calls = data["tool_calls"]
     if not isinstance(raw_calls, list):
         raise ProtocolError("tool_calls must be a list")
     done = data.get("done")
     if done is not None and not isinstance(done, str):
         raise ProtocolError("done must be null or a string")
-    return Output(summary, [_request(call, tools) for call in raw_calls], done)
+    return Output([_request(call, tools) for call in raw_calls], done)
 
 
 def _tool_branch(spec: dict[str, Any]) -> dict[str, Any]:
@@ -192,9 +178,8 @@ def turn_schema(tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
                          {"type": "array", "minItems": 1,
                           "items": {"type": "string", "minLength": 1}}]}}}
     return {"type": "object", "additionalProperties": False,
-            "required": ["summary", "tool_calls", "done"],
-            "properties": {"summary": {"type": "string", "minLength": 1},
-                           "tool_calls": {"type": "array", "items": {
+            "required": ["tool_calls", "done"],
+            "properties": {"tool_calls": {"type": "array", "items": {
                                "anyOf": [file_call] + [_tool_branch(t) for t in tool_specs]
                                + [retrieve_call]}},
                            "done": {"type": ["string", "null"]}}}

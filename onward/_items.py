@@ -1,4 +1,4 @@
-"""Append-only context: one fixed header, a durable summary log, and recent history."""
+"""Render tasks, tool-call history, and recent observations as chat messages."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ Kind = Literal["task", "model_output", "file", "tool_result", "error"]
 
 @dataclass(frozen=True)
 class Item:
-    """One append-only piece of context."""
+    """One context entry, with an optional replacement after the next model request."""
 
     kind: Kind
     content: str
+    placeholder: str | None = None
 
 
 def tokens(text: str) -> int:
@@ -22,12 +23,7 @@ def tokens(text: str) -> int:
 
 
 def render(items: list[Item], system: str, budget: int | None = None) -> list[dict[str, str]]:
-    """Render history without rewriting any earlier message.
-
-    The task is the first message after the system prompt. Summaries and
-    observations stay in their original order; only the final instruction
-    changes between turns.
-    """
+    """Render the current history in order, with the changing instruction last."""
     messages = [{"role": "system", "content": system}]
     for item in items:
         role = "assistant" if item.kind == "model_output" else "user"
@@ -37,9 +33,8 @@ def render(items: list[Item], system: str, budget: int | None = None) -> list[di
     if budget is not None:
         status += f" (budget ~{budget} tokens)"
     status += (
-        "\nReply with one JSON object. Summarize the previous turn in "
-        "`summary`; this summary is durable context. List the next tool calls "
-        "in `tool_calls`, with an `id` on each call; use `retrieve` to append a past result by ID. "
+        "\nReply with one JSON object. List the next calls in `tool_calls`. "
+        "Give file and tool calls an `id`. Use `retrieve` to request a past result by ID. "
         "Set `done` to the final answer when finished."
     )
     messages.append({"role": "user", "content": status})
