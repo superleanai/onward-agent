@@ -112,6 +112,7 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
         tool_dispatch: dict[str, Any], *, request_params: dict[str, Any] | None = None,
         max_turns: int = 50, log_path: Path | None = None, schema: bool = True,
         max_item_chars: int = 30_000, context_budget: int | None = None,
+        trace_context: bool = False,
         results_dir: Path | None = None, items: list[Item] | None = None,
         results: ResultStore | None = None, start_turn: int = 1) -> Result:
     """Run `task` until the model sets `done` or `max_turns` is reached.
@@ -134,8 +135,8 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
     log = log_path.open("a") if log_path else None
     try:
         for turn in range(start_turn, start_turn + max_turns):
-            response = client.chat.completions.create(
-                model=model, messages=render(items, system, context_budget), **params)
+            messages = render(items, system, context_budget)
+            response = client.chat.completions.create(model=model, messages=messages, **params)
             items = [Item(item.kind, item.placeholder) if item.placeholder is not None else item
                      for item in items]
             reply = _ECHOED_TAGS.sub("", response.choices[0].message.content or "")
@@ -143,6 +144,8 @@ def run(task: str, client: Client, model: str, tool_specs: list[dict[str, Any]],
                                       "usage": _usage(response),
                                       "finish_reason": getattr(response.choices[0], "finish_reason", None),
                                       "reply": reply}
+            if trace_context:
+                record["messages"] = messages
             try:
                 out = parse(reply, tools)
             except ProtocolError as exc:

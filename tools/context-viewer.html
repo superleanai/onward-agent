@@ -1,0 +1,218 @@
+<div id="onward-context-viewer">
+  <h2>Onward context trace</h2>
+  <label class="form-label trace-file">
+    Open a context trace (.jsonl)
+    <input class="form-control" type="file" accept=".jsonl,application/json,text/plain">
+  </label>
+  <p class="text-destructive" role="alert" hidden></p>
+  <section class="trace-run" hidden>
+    <label class="form-label trace-turn">
+      <span>Model request <output class="tabular-nums"></output></span>
+      <input class="form-range" type="range" min="1" value="1">
+    </label>
+    <div class="trace-measure" role="img">
+      <span class="trace-prefix"></span>
+    </div>
+    <p class="trace-measure-label tabular-nums" aria-live="polite"></p>
+    <p class="trace-usage text-small"></p>
+    <label class="form-check">
+      <input class="form-check-input" type="checkbox">
+      Show unchanged messages
+    </label>
+    <div class="trace-entries"></div>
+  </section>
+</div>
+<style>
+  #onward-context-viewer {
+    --trace-gap: var(--font-size-base, 1rem);
+    display: grid;
+    gap: var(--trace-gap);
+    color: var(--foreground, CanvasText);
+  }
+  #onward-context-viewer h2 { margin: 0; }
+  #onward-context-viewer .trace-run:not([hidden]) { display: grid; gap: calc(var(--trace-gap) * .5); }
+  #onward-context-viewer .trace-turn { display: grid; gap: calc(var(--trace-gap) * .25); }
+  #onward-context-viewer p { margin: 0; }
+  #onward-context-viewer .trace-measure {
+    display: flex;
+    height: calc(var(--trace-gap) * .5);
+    overflow: hidden;
+    background: var(--muted, color-mix(in srgb, CanvasText 12%, Canvas));
+    border-radius: calc(var(--trace-gap) * .25);
+  }
+  #onward-context-viewer .trace-prefix { background: var(--viz-series-1, Highlight); }
+  #onward-context-viewer details { margin-top: calc(var(--trace-gap) * .5); }
+  #onward-context-viewer summary, #onward-context-viewer pre { overflow-wrap: anywhere; }
+  #onward-context-viewer pre { white-space: pre-wrap; }
+  #onward-context-viewer .trace-body { padding-inline-start: var(--trace-gap); }
+  #onward-context-viewer[data-standalone] { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  #onward-context-viewer[data-standalone] .trace-file input { display: block; margin-block-start: .35em; }
+  body:has(#onward-context-viewer[data-standalone]) { max-width: 60rem; margin: 2rem auto; padding-inline: 1rem; }
+</style>
+<script type="application/json" id="onward-embedded-trace">[]</script>
+<script>
+  (() => {
+    const root = document.getElementById('onward-context-viewer');
+    const file = root.querySelector('input[type=file]');
+    const alert = root.querySelector('[role=alert]');
+    const run = root.querySelector('.trace-run');
+    const slider = root.querySelector('input[type=range]');
+    const output = root.querySelector('output');
+    const includeUnchanged = root.querySelector('input[type=checkbox]');
+    const entries = root.querySelector('.trace-entries');
+    const prefixBar = root.querySelector('.trace-prefix');
+    const measure = root.querySelector('.trace-measure');
+    const measureLabel = root.querySelector('.trace-measure-label');
+    const usageLabel = root.querySelector('.trace-usage');
+    const format = Intl.NumberFormat();
+    let turns = [];
+    if (!window.openai) root.dataset.standalone = '';
+
+    function validTurn(turn) {
+      return Number.isInteger(turn?.turn) && Array.isArray(turn.messages) && turn.messages.length > 0
+        && turn.messages.every(message => typeof message?.role === 'string' && typeof message.content === 'string');
+    }
+
+    function equal(before, after) {
+      return before?.role === after?.role && before?.content === after?.content;
+    }
+
+    function characterCount(messages) {
+      return messages.reduce((total, message) => total + Array.from(message.content).length, 0);
+    }
+
+    function description(message) {
+      const firstLine = message.content.split('\n', 1)[0];
+      return firstLine.length > 106 ? `${firstLine.slice(0, 105)}…` : firstLine || '(empty)';
+    }
+
+    function detail(label, before, after) {
+      const row = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.className = 'cursor-interaction';
+      summary.textContent = `${label} · ${description(after || before)}`;
+      row.append(summary);
+      const body = document.createElement('div');
+      body.className = 'trace-body';
+      const versions = before && after ? [['Previous request', before], ['This request', after]]
+        : [['', after || before]];
+      for (const [caption, message] of versions) {
+        if (caption) {
+          const label = document.createElement('p');
+          label.textContent = caption;
+          body.append(label);
+        }
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        code.textContent = message.content;
+        pre.append(code);
+        body.append(pre);
+      }
+      row.append(body);
+      return row;
+    }
+
+    function render() {
+      const index = Number(slider.value) - 1;
+      const current = turns[index];
+      if (!current) return;
+      const before = turns[index - 1]?.messages || [];
+      const after = current.messages;
+      const previousHistory = before.slice(0, -1);
+      const history = after.slice(0, -1);
+      let prefix = 0;
+      while (prefix < before.length && prefix < after.length && equal(before[prefix], after[prefix])) prefix++;
+      const totalChars = characterCount(after);
+      const prefixChars = characterCount(after.slice(0, prefix));
+      const meterText = `${format.format(prefixChars)} unchanged prefix characters of ${format.format(totalChars)} in prompt`;
+      output.value = `${current.turn} of ${turns.at(-1).turn}`;
+      measure.setAttribute('aria-label', meterText);
+      measureLabel.textContent = meterText;
+      prefixBar.style.width = `${totalChars ? 100 * prefixChars / totalChars : 0}%`;
+      const {prompt_tokens: input, cached_tokens: cached} = current.usage || {};
+      usageLabel.textContent = Number.isFinite(input)
+        ? `Backend tokens · ${format.format(input)} input${Number.isFinite(cached) ? ` · ${format.format(cached)} cached` : ''}`
+        : '';
+      usageLabel.hidden = !usageLabel.textContent;
+
+      const rows = [];
+      for (let i = 0; i < Math.max(previousHistory.length, history.length); i++) {
+        const old = previousHistory[i];
+        const message = history[i];
+        if (!message) rows.push(detail(`Removed ${old.role}`, old));
+        else if (!old) rows.push(detail(`Added ${message.role}`, null, message));
+        else if (!equal(old, message)) rows.push(detail(`Replaced ${message.role}`, old, message));
+        else if (includeUnchanged.checked) rows.push(detail(`Unchanged ${message.role}`, null, message));
+      }
+      const oldReminder = before.at(-1);
+      const reminder = after.at(-1);
+      if (!equal(oldReminder, reminder) || includeUnchanged.checked) {
+        rows.push(detail('Context reminder', equal(oldReminder, reminder) ? null : oldReminder, reminder));
+      }
+      if (current.reply) rows.push(detail('Model reply', null, {content: current.reply}));
+      entries.replaceChildren(...rows);
+    }
+
+    function load(records, requestedTurn) {
+      const next = records.filter(validTurn);
+      if (!next.length) throw new Error('No prompt messages found. Record the run with --trace-context.');
+      turns = next;
+      slider.max = String(turns.length);
+      const chosen = turns.findIndex(turn => turn.turn === requestedTurn);
+      slider.value = String(chosen < 0 ? Math.min(3, turns.length) : chosen + 1);
+      slider.disabled = turns.length === 1;
+      alert.hidden = true;
+      run.hidden = false;
+      render();
+    }
+
+    function updateSelection() {
+      render();
+      window.openai?.setWidgetState?.({
+        modelContent: {turn: turns[Number(slider.value) - 1]?.turn},
+        privateContent: {includeUnchanged: includeUnchanged.checked},
+      }).catch(() => {});
+    }
+
+    slider.addEventListener('input', updateSelection);
+    includeUnchanged.addEventListener('change', updateSelection);
+    file.addEventListener('change', async () => {
+      if (!file.files.length) return;
+      try {
+        const raw = await file.files[0].text();
+        const lines = raw.split('\n');
+        const records = [];
+        for (const [index, line] of lines.entries()) {
+          if (!line.trim()) continue;
+          try {
+            records.push(JSON.parse(line));
+          } catch (error) {
+            if (index !== lines.length - 1) throw error;
+          }
+        }
+        load(records);
+      } catch (error) {
+        alert.textContent = error.message;
+        alert.hidden = false;
+      } finally {
+        file.value = '';
+      }
+    });
+
+    function restore(state) {
+      if (!state) return;
+      const position = turns.findIndex(turn => turn.turn === state.modelContent?.turn);
+      if (position >= 0) slider.value = String(position + 1);
+      includeUnchanged.checked = Boolean(state.privateContent?.includeUnchanged);
+      render();
+    }
+
+    const embedded = JSON.parse(document.getElementById('onward-embedded-trace').textContent);
+    if (embedded.length) {
+      file.closest('label').hidden = Boolean(window.openai);
+      load(embedded);
+      restore(window.openai?.widgetState);
+    }
+    window.addEventListener('openai:set_globals', event => restore(event.detail?.globals?.widgetState));
+  })();
+</script>

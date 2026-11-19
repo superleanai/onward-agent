@@ -89,6 +89,7 @@ onward "make the tests pass"            # one-shot: prints the final answer
 onward --json "make the tests pass"     # {"final", "turns", "items", "log"}
 echo "task" | onward                    # piped stdin remains one-shot
 onward --model k3.1-pro --inference-db kimi-coding --max-turns 50 --context-budget 20000 --log-dir runs "task"
+onward --trace-context "make the tests pass"  # include prompt messages in the run log
 ```
 
 With no arguments on a terminal, Onward starts a REPL. Each prompt runs a task in the same
@@ -111,6 +112,11 @@ protocol. `new_items` is present for valid turns that continue the task.
 ```sh
 jq -c '{turn, items_before, items_after, prompt: .usage.prompt_tokens, cached: .usage.cached_tokens}' runs/*.jsonl
 ```
+
+With `--trace-context`, every logged turn includes the exact `messages` passed to the model client.
+Open [the context viewer](tools/context-viewer.html) in a browser and select that run's JSONL file.
+Move through the model requests to see additions, replacements, and the unchanged prefix. Expand
+any entry to read its content. Recorded prompts can include source code and tool output.
 
 ## Development
 

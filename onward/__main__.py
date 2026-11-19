@@ -26,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-turns", type=int, default=50, help="default: %(default)s")
     parser.add_argument("--log-dir", type=Path, default=Path("runs"),
                         help="one JSONL log per run, one record per turn (default: %(default)s)")
+    parser.add_argument("--trace-context", action="store_true",
+                        help="include the exact prompt messages in each turn's run log")
     parser.add_argument("--context-budget", type=int, default=20_000,
                         help="soft context budget in tokens, shown to the model each turn (default: %(default)s)")
     parser.add_argument("--no-schema", action="store_true",
@@ -60,7 +62,7 @@ def _create_runner(args: argparse.Namespace) -> RunTask:
         result = run(task, client, schema.get("model", args.model), tool_specs, tool_dispatch,
                      request_params=dict(schema.get("request_params") or {}),
                      max_turns=args.max_turns, log_path=log, schema=not args.no_schema,
-                     context_budget=args.context_budget, results=results,
+                     context_budget=args.context_budget, trace_context=args.trace_context, results=results,
                      items=items, start_turn=next_turn)
         items = result.items
         next_turn = result.turns + 1

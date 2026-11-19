@@ -73,7 +73,9 @@ def test_cache_prefix_breaks_at_each_replaced_batch(tools: Any, tmp_path: Path) 
         _r("second", [{"tool": "exec_shell", "args": {"command": "echo b"}}]),
         _r("third"),
         _r("fourth", done="ok")])
-    _run(client, tools, tmp_path)
+    _run(client, tools, tmp_path, trace_context=True)
+    records = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
+    assert [record["messages"] for record in records] == client.calls
     assert client.calls[1][:-3] == client.calls[0][:-1]
     assert client.calls[2][:3] == client.calls[1][:3]
     assert client.calls[2][3] != client.calls[1][3]
@@ -138,6 +140,7 @@ def test_log_contains_original_reply_and_new_items(tools: Any, tmp_path: Path) -
     _run(client, tools, tmp_path)
     records = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
     assert "summary" not in records[0]
+    assert "messages" not in records[0]
     assert json.loads(records[0]["reply"])["tool_calls"][0]["args"] == {"command": "echo a"}
     assert records[0]["new_items"][0][0] == "tool_result"
     assert json.loads(records[1]["reply"])["done"] == "ok"
