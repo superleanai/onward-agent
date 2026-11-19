@@ -128,6 +128,22 @@
     .metric output { font-size: clamp(1.06rem, 2.5vw, 1.65rem); font-weight: 550; letter-spacing: -.067em; }
     .metric small { color: var(--muted); margin-left: 6px; font-size: .74rem; }
     #prefix-size { color: var(--accent); }
+    .retrieval-metrics .metric dd small { display: block; margin-left: 0; }
+    .retrieval-metrics .metric a { display: inline-block; color: var(--accent); font-size: .83rem; }
+    .retrieval-details { margin-top: 16px; }
+    .retrieval-details summary { cursor: pointer; padding: 14px 16px; font-size: .94rem; font-weight: 650; }
+    .retrieval-details[open] summary { border-bottom: 1px solid var(--line); }
+    .retrieval-details table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .83rem; }
+    .retrieval-details th, .retrieval-details td {
+      padding: 8px 12px; text-align: left; overflow-wrap: anywhere; border-bottom: 1px solid var(--line);
+    }
+    .retrieval-details thead th { font-size: .75rem; color: var(--muted); }
+    .retrieval-details th:first-child { width: 46%; }
+    .retrieval-details th:nth-child(2) { width: 20%; }
+    .retrieval-details th:nth-child(n + 3), .retrieval-details td:nth-child(n + 3) { text-align: right; }
+    .retrieval-details tbody tr:last-child td { border-bottom: 0; }
+    .retrieval-details tbody tr:hover { background: var(--inset); }
+    #retrieval-empty { padding: 12px 16px; color: var(--muted); }
 
     .workspace { display: grid; grid-template-columns: minmax(265px, .86fr) minmax(0, 2fr); gap: 16px; }
     .message-list, .inspector { min-width: 0; }
@@ -250,6 +266,17 @@
         <div class="metric"><dt>Unchanged prefix</dt><dd><output class="mono" id="prefix-size"></output><small id="prefix-share"></small></dd></div>
         <div class="metric"><dt>Backend input tokens</dt><dd><output class="mono" id="backend-input"></output><small id="backend-cache"></small></dd></div>
       </dl>
+      <dl class="metrics retrieval-metrics panel">
+        <div class="metric"><dt>Total retrieves</dt><dd>
+          <output class="mono" id="retrieve-total"></output><small id="retrieve-so-far"></small>
+        </dd></div>
+        <div class="metric"><dt>Total re-read tokens (est.)</dt><dd>
+          <output class="mono" id="reread-total"></output><small id="reread-so-far"></small>
+        </dd></div>
+        <div class="metric"><dt>Result IDs requested</dt><dd>
+          <output class="mono" id="retrieve-ids"></output><small><a id="show-retrievals" href="#retrieval-details">By tool call ↘</a></small>
+        </dd></div>
+      </dl>
       <div class="workspace">
         <section class="message-list panel" aria-labelledby="messages-title">
           <div class="section-head">
@@ -272,6 +299,14 @@
           </div>
         </section>
       </div>
+      <details class="retrieval-details panel" id="retrieval-details">
+        <summary>Retrieves per tool call</summary>
+        <p id="retrieval-empty" hidden>No tool calls in this trace.</p>
+        <table aria-label="Retrieves per tool call">
+          <thead><tr><th>Tool-call ID</th><th>Tool</th><th>By this step</th><th>Run total</th></tr></thead>
+          <tbody id="retrieval-rows"></tbody>
+        </table>
+      </details>
     </div>
   </main>
   <script type="application/json" id="onward-embedded-trace">[]</script>
@@ -295,6 +330,8 @@
       let mode = 'changes';
       let selected = '';
       let visible = [];
+      let retrievals;
+      let retrievalRows = [];
 
       const titleCase = value => value.slice(0, 1).toUpperCase() + value.slice(1);
       const count = content => [...content].length;
@@ -303,6 +340,86 @@
       function validTurn(turn) {
         return Number.isInteger(turn?.turn) && Array.isArray(turn.messages) && turn.messages.length > 0
           && turn.messages.every(message => typeof message?.role === 'string' && typeof message.content === 'string');
+      }
+
+      function executedCalls(turn) {
+        if (turn.error || typeof turn.reply !== 'string') return [];
+        try {
+          const raw = turn.reply;
+          const response = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
+          return response.done == null && Array.isArray(response.tool_calls) ? response.tool_calls : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function retrievalStats(records) {
+        const byId = new Map();
+        const steps = [];
+        let calls = 0;
+        let tokens = 0;
+        for (const [index, turn] of records.entries()) {
+          steps.push({calls, tokens});
+          const actions = executedCalls(turn);
+          const following = records[index + 1];
+          // A result follows the assistant placeholder at the same offset as its call.
+          const start = turn.messages.length;
+          const resultsInPrompt = following?.turn === turn.turn + 1
+            && following.messages[start - 1]?.content === '[tool calls: ' + actions.length + ']';
+          let nextPromptTokens = 0;
+          for (const [offset, action] of actions.entries()) {
+            if (action?.type === 'retrieve') {
+              calls++;
+              const ids = Array.isArray(action.retrieve) ? action.retrieve : [action.retrieve];
+              for (const id of ids) {
+                if (typeof id !== 'string') continue;
+                if (!byId.has(id)) byId.set(id, {id, tool: '', steps: []});
+                byId.get(id).steps.push(index * 2 + 1);
+              }
+              if (resultsInPrompt && start + offset < following.messages.length - 1) {
+                nextPromptTokens += Math.ceil(count(following.messages[start + offset].content) / 4);
+              }
+            } else if ((action?.type === 'file' || action?.type === 'tool') && typeof action.id === 'string') {
+              if (!byId.has(action.id)) byId.set(action.id, {id: action.id, tool: '', steps: []});
+              const item = byId.get(action.id);
+              if (!item.tool) item.tool = action.type === 'file' ? 'read_file' : action.tool;
+            }
+          }
+          steps.push({calls, tokens});
+          tokens += nextPromptTokens;
+        }
+        const items = [...byId.values()].sort((a, b) => b.steps.length - a.steps.length || a.id.localeCompare(b.id));
+        return {calls, tokens, steps, items, referenced: items.filter(item => item.steps.length).length};
+      }
+
+      function renderRetrievalTable() {
+        const body = $('#retrieval-rows');
+        const empty = !retrievals.items.length;
+        $('#retrieval-empty').hidden = !empty;
+        body.closest('table').hidden = empty;
+        retrievalRows = retrievals.items.map(item => {
+          const row = document.createElement('tr');
+          for (const [index, value] of [item.id, item.tool || '—', '', format.format(item.steps.length)].entries()) {
+            const cell = row.insertCell();
+            if (index !== 1) cell.className = 'mono';
+            cell.textContent = value;
+          }
+          return row;
+        });
+        body.replaceChildren(...retrievalRows);
+        $('#retrieve-total').value = format.format(retrievals.calls);
+        $('#reread-total').value = format.format(retrievals.tokens);
+        $('#retrieve-ids').value = format.format(retrievals.referenced);
+      }
+
+      function renderRetrievalStep() {
+        const {calls, tokens} = retrievals.steps[active];
+        $('#retrieve-so-far').textContent = format.format(calls) + ' by this step';
+        $('#reread-so-far').textContent = format.format(tokens) + ' by this step';
+        retrievals.items.forEach((item, index) => {
+          const countSoFar = item.steps.filter(step => step <= active).length;
+          retrievalRows[index].cells[2].textContent = format.format(countSoFar);
+        });
       }
 
       function snapshot(record, prior) {
@@ -506,6 +623,7 @@
         const {prompt_tokens: input, cached_tokens: cached} = turn.usage || {};
         $('#backend-input').value = Number.isFinite(input) ? format.format(input) : '—';
         $('#backend-cache').textContent = Number.isFinite(cached) ? format.format(cached) + ' cached' : '';
+        renderRetrievalStep();
         renderMessages();
       }
 
@@ -520,6 +638,8 @@
         const valid = records.filter(validTurn);
         if (!valid.length) throw new Error('No prompt messages found. Record the run with --trace-context.');
         turns = valid.map((record, index) => snapshot(record, valid[index - 1]));
+        retrievals = retrievalStats(valid);
+        renderRetrievalTable();
         const label = $('#run-label');
         const parts = [metadata.name, metadata.model, turns.length + (turns.length === 1 ? ' turn' : ' turns')].filter(Boolean);
         label.replaceChildren(...parts.map(part => {
@@ -562,6 +682,7 @@
       next.addEventListener('click', () => setStep(active + 1));
       changes.addEventListener('click', () => setMode('changes'));
       fullPrompt.addEventListener('click', () => setMode('full'));
+      $('#show-retrievals').addEventListener('click', () => { $('#retrieval-details').open = true; });
       file.addEventListener('change', async () => {
         if (!file.files.length) return;
         try {

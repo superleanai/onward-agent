@@ -119,6 +119,11 @@ The timeline alternates between requests and responses. Request steps show addit
 and the unchanged prefix. Response steps show the raw model reply. Select a changed entry to compare
 its exact text before and after. Recorded prompts can include source code and tool output.
 
+The viewer counts each retrieve action once and counts each requested ID in the per-tool-call
+table. Re-read tokens estimate the size of retrieval output that reached a later prompt, using
+four characters per token with rounding per message. The viewer shows run totals and counts
+through the selected request or response.
+
 ## Development
 
 ```sh
