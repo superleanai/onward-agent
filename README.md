@@ -163,11 +163,14 @@ table. Re-read tokens estimate the size of retrieval output that reached a later
 four characters per token with rounding per message. The viewer shows run totals and counts
 through the selected request or response.
 
-Select up to three JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
+Select up to four JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
 trace switch above the timeline to inspect either run at the selected step.
+Stable-prefix traces also show the request breakpoint and the number of cache writes reported
+by the provider.
 For GPT-6.2 Sol traces with complete token counts, the viewer estimates Standard API costs from
-uncached input, cached input, and output tokens. The estimate uses the recorded acting-model
-usage and prices tokens without a logged cache hit as ordinary input.
+ordinary input, cached input, cache writes, and output tokens. The estimate uses the provider's
+30-minute write rate for recorded writes. When write counts are unavailable, input outside
+cache hits is priced as ordinary input.
 [OpenAI model pricing](https://developers.openai.com/api/docs/models/gpt-6.2-sol#pricing)
 
 ## Development
