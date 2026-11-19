@@ -71,13 +71,33 @@
       padding: 7px 11px; border-radius: 8px; font-size: .84rem; white-space: nowrap;
     }
     .run-result::before { content: "✓"; margin-right: 7px; }
+    .run-result[data-passed="false"] { color: var(--removed); background: #382724; border-color: #63423a; }
+    .run-result[data-passed="false"]::before { content: "×"; }
     .notice { padding: 16px; margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; }
     [role="alert"] { color: var(--removed); }
 
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 15px; }
+    .comparison { margin-bottom: 16px; }
+    .comparison summary { cursor: pointer; padding: 14px 17px; font-weight: 650; }
+    .comparison[open] summary { border-bottom: 1px solid var(--line); }
+    .comparison-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .83rem; }
+    .comparison-table th, .comparison-table td {
+      padding: 6px 13px; text-align: right; overflow-wrap: anywhere;
+      vertical-align: middle; border-bottom: 1px solid var(--line);
+    }
+    .comparison-table th:first-child { width: 42%; padding-left: 17px; text-align: left; }
+    .comparison-table th:last-child { width: 15%; }
+    .comparison-table thead { background: var(--inset); }
+    .comparison-table tbody th { color: var(--muted); font-weight: 500; }
+    .comparison-table tbody td:last-child { color: var(--accent); }
+    .comparison-note { padding: 9px 17px; color: var(--muted); font-size: .74rem; }
+    .trace-controls { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .trace-controls .mode { margin: 0; max-width: 100%; }
+    .trace-controls .mode button { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
     .timeline { padding: 17px 21px 13px; margin-bottom: 16px; }
     .timeline-head, .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .timeline h2, .section-head h2 { font-size: 1.04rem; font-weight: 650; letter-spacing: -.02em; }
+    .timeline-head { justify-content: flex-end; margin-top: 4px; }
     .legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: .78rem; }
     .legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
     .legend i { width: 8px; height: 8px; border-radius: 2px; background: var(--prefix); }
@@ -212,6 +232,9 @@
       h1 { font-size: 2.65rem; }
       .timeline { padding-inline: 12px; }
       .timeline-head { align-items: start; flex-direction: column; gap: 5px; }
+      .trace-controls { align-items: start; flex-direction: column; }
+      .comparison-table th, .comparison-table td { padding: 6px 5px; }
+      .comparison-table th:first-child { padding-left: 10px; }
       .scrubber { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
       .scrubber .step-count { grid-area: 1 / 2; }
       .scrubber input { grid-column: 1 / -1; }
@@ -226,8 +249,8 @@
   <header class="masthead">
     <div class="frame">
       <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Onward</div>
-      <input class="file-picker" id="trace-file" type="file" accept=".jsonl,application/json,text/plain">
-      <label for="trace-file" class="file-button">Open trace</label>
+      <input class="file-picker" id="trace-file" type="file" accept=".jsonl,application/json,text/plain" multiple>
+      <label for="trace-file" class="file-button">Open traces</label>
     </div>
   </header>
   <main class="frame">
@@ -241,9 +264,21 @@
     <p class="notice" id="empty-state">Open a JSONL trace recorded with <code>--trace-context</code>.</p>
     <p class="notice" role="alert" hidden></p>
     <div id="trace-run" hidden>
+      <details class="comparison panel" id="comparison" open hidden>
+        <summary>Run comparison</summary>
+        <table class="comparison-table" aria-label="Run comparison">
+          <thead><tr><th scope="col">Metric</th><th scope="col" id="left-run"></th><th scope="col" id="right-run"></th>
+            <th scope="col" title="Right run minus left run">Change</th></tr></thead>
+          <tbody id="comparison-rows"></tbody>
+        </table>
+        <p class="comparison-note" id="comparison-note"></p>
+      </details>
       <section class="timeline panel" aria-labelledby="timeline-title">
-        <div class="timeline-head">
+        <div class="trace-controls">
           <h2 id="timeline-title">Run timeline</h2>
+          <div class="mode" role="group" aria-label="Trace to inspect" id="run-switch" hidden></div>
+        </div>
+        <div class="timeline-head">
           <div class="legend">
             <span><i aria-hidden="true"></i>Unchanged prefix</span>
             <span><i class="suffix-key" aria-hidden="true"></i>Rest of request</span>
@@ -311,10 +346,12 @@
   </main>
   <script type="application/json" id="onward-embedded-trace">[]</script>
   <script type="application/json" id="onward-run-metadata">{}</script>
+  <script type="application/json" id="onward-comparison-runs">[]</script>
   <script>
     (() => {
       const $ = selector => document.querySelector(selector);
       const format = new Intl.NumberFormat();
+      const signed = new Intl.NumberFormat(undefined, {signDisplay: 'exceptZero'});
       const chart = $('.turn-chart');
       const rows = $('.message-rows');
       const versions = $('.versions');
@@ -325,6 +362,8 @@
       const slider = $('#trace-step');
       const changes = $('#changes');
       const fullPrompt = $('#full-prompt');
+      const runSwitch = $('#run-switch');
+      let datasets = [];
       let turns = [];
       let active = 0;
       let mode = 'changes';
@@ -358,14 +397,16 @@
         const steps = [];
         let calls = 0;
         let tokens = 0;
+        let otherCalls = 0;
         for (const [index, turn] of records.entries()) {
           steps.push({calls, tokens});
           const actions = executedCalls(turn);
           const following = records[index + 1];
-          // A result follows the assistant placeholder at the same offset as its call.
+          // A result follows the assistant message at the same offset as its call.
           const start = turn.messages.length;
-          const resultsInPrompt = following?.turn === turn.turn + 1
-            && following.messages[start - 1]?.content === '[tool calls: ' + actions.length + ']';
+          const assistant = following?.messages[start - 1];
+          const resultsInPrompt = following?.turn === turn.turn + 1 && assistant?.role === 'assistant'
+            && (assistant.content === turn.reply || assistant.content === '[tool calls: ' + actions.length + ']');
           let nextPromptTokens = 0;
           for (const [offset, action] of actions.entries()) {
             if (action?.type === 'retrieve') {
@@ -380,6 +421,7 @@
                 nextPromptTokens += Math.ceil(count(following.messages[start + offset].content) / 4);
               }
             } else if ((action?.type === 'file' || action?.type === 'tool') && typeof action.id === 'string') {
+              otherCalls++;
               if (!byId.has(action.id)) byId.set(action.id, {id: action.id, tool: '', steps: []});
               const item = byId.get(action.id);
               if (!item.tool) item.tool = action.type === 'file' ? 'read_file' : action.tool;
@@ -389,7 +431,7 @@
           tokens += nextPromptTokens;
         }
         const items = [...byId.values()].sort((a, b) => b.steps.length - a.steps.length || a.id.localeCompare(b.id));
-        return {calls, tokens, steps, items, referenced: items.filter(item => item.steps.length).length};
+        return {calls, tokens, otherCalls, steps, items, referenced: items.filter(item => item.steps.length).length};
       }
 
       function renderRetrievalTable() {
@@ -460,7 +502,8 @@
         const toolId = first.match(/^<([^>]+)>$/)?.[1];
         const previousToolId = before?.content.match(/^<([^>\n]+)>/)?.[1];
         const title = name || (message.role === 'system' ? 'System prompt' : first === '<uploaded_files>' ? 'Task'
-          : first.startsWith('[tool calls:') ? 'Tool calls' : toolId || previousToolId || first || 'Empty message');
+          : first.startsWith('[tool calls:') ? 'Tool calls' : message.role === 'assistant' && first.startsWith('{')
+            ? 'Model reply' : toolId || previousToolId || first || 'Empty message');
         return {id, kind, before, after, title, role: message.role, beforeCaption};
       }
 
@@ -634,14 +677,99 @@
         renderMessages();
       }
 
-      function load(records, metadata = {}) {
+      function prepareDataset({records, metadata}) {
         const valid = records.filter(validTurn);
         if (!valid.length) throw new Error('No prompt messages found. Record the run with --trace-context.');
-        turns = valid.map((record, index) => snapshot(record, valid[index - 1]));
-        retrievals = retrievalStats(valid);
+        const snapshots = valid.map((record, index) => snapshot(record, valid[index - 1]));
+        const reads = retrievalStats(valid);
+        function usageTotal(key) {
+          const values = valid.map(turn => turn.usage?.[key]);
+          return values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) : null;
+        }
+        const backendInput = usageTotal('prompt_tokens');
+        const backendCached = usageTotal('cached_tokens');
+        return {
+          metadata,
+          snapshots,
+          reads,
+          metrics: {
+            result: metadata.result,
+            turns: snapshots.length,
+            toolCalls: reads.otherCalls,
+            retrieves: reads.calls,
+            reread: reads.tokens,
+            promptPeak: Math.max(...snapshots.map(turn => turn.total)),
+            promptTotal: snapshots.reduce((sum, turn) => sum + turn.total, 0),
+            summaryTokens: valid.reduce((sum, turn) =>
+              sum + (typeof turn.summary === 'string' ? Math.ceil(count(turn.summary) / 4) : 0), 0),
+            backendInput,
+            backendCached,
+            backendUncached: backendInput === null || backendCached === null ? null : backendInput - backendCached,
+            backendOutput: usageTotal('completion_tokens'),
+          },
+        };
+      }
+
+      function datasetName(dataset) {
+        return dataset.metadata.label || dataset.metadata.name;
+      }
+
+      function renderComparison() {
+        const container = $('#comparison');
+        container.hidden = datasets.length !== 2;
+        if (container.hidden) return;
+        const [left, right] = datasets;
+        $('#left-run').textContent = datasetName(left);
+        $('#right-run').textContent = datasetName(right);
+        const fields = [
+          ['result', 'Benchmark verifier'],
+          ['turns', 'Model requests'],
+          ['toolCalls', 'File and tool calls'],
+          ['retrieves', 'Retrieve calls'],
+          ['reread', 'Re-read tokens (est.)'],
+          ['summaryTokens', 'Generated summary tokens (est.)'],
+          ['promptPeak', 'Peak prompt characters'],
+          ['promptTotal', 'Total prompt characters'],
+          ['backendInput', 'Backend input tokens'],
+          ['backendCached', 'Cached input tokens'],
+          ['backendUncached', 'Uncached input tokens'],
+          ['backendOutput', 'Backend output tokens'],
+        ];
+        $('#comparison-rows').replaceChildren(...fields.map(([key, name]) => {
+          const row = document.createElement('tr');
+          row.dataset.metric = key;
+          const header = document.createElement('th');
+          header.scope = 'row';
+          header.textContent = name;
+          row.append(header);
+          const a = left.metrics[key];
+          const b = right.metrics[key];
+          for (const value of [a, b]) {
+            const cell = row.insertCell();
+            if (Number.isFinite(value)) cell.className = 'mono';
+            cell.textContent = Number.isFinite(value) ? format.format(value) : value || '—';
+          }
+          const delta = row.insertCell();
+          delta.className = 'mono';
+          delta.textContent = Number.isFinite(a) && Number.isFinite(b) ? signed.format(b - a) : '—';
+          return row;
+        }));
+        const sameBridge = left.metadata.backend === 'Codex CLI' && right.metadata.backend === 'Codex CLI';
+        $('#comparison-note').textContent = 'Change is the right run minus the left. Re-read and summary tokens use four characters per token.'
+          + (sameBridge ? ' Backend totals include the Codex CLI wrapper.' : '');
+      }
+
+      function showDataset(index) {
+        const {metadata, snapshots, reads} = datasets[index];
+        turns = snapshots;
+        retrievals = reads;
         renderRetrievalTable();
+        for (const [i, button] of [...runSwitch.children].entries()) {
+          button.setAttribute('aria-pressed', String(i === index));
+        }
         const label = $('#run-label');
-        const parts = [metadata.name, metadata.model, turns.length + (turns.length === 1 ? ' turn' : ' turns')].filter(Boolean);
+        const parts = [metadata.name, metadata.model, metadata.label,
+          turns.length + (turns.length === 1 ? ' turn' : ' turns')].filter(Boolean);
         label.replaceChildren(...parts.map(part => {
           const text = document.createElement('span');
           text.textContent = part;
@@ -651,15 +779,45 @@
         const result = $('#run-result');
         result.textContent = metadata.result || '';
         result.hidden = !metadata.result;
+        result.dataset.passed = metadata.passed;
+        renderChart();
+        slider.max = turns.length * 2;
+        setStep(active);
+      }
+
+      function load(inputs) {
+        datasets = inputs.map(prepareDataset);
+        runSwitch.hidden = datasets.length < 2;
+        runSwitch.replaceChildren(...datasets.map((dataset, index) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.index = index;
+          button.textContent = datasetName(dataset);
+          return button;
+        }));
+        renderComparison();
         $('#empty-state').hidden = true;
         $('#trace-run').hidden = false;
         alert.hidden = true;
-        renderChart();
         mode = 'changes';
         changes.setAttribute('aria-pressed', 'true');
         fullPrompt.setAttribute('aria-pressed', 'false');
-        slider.max = turns.length * 2;
-        setStep(0);
+        active = 0;
+        showDataset(0);
+      }
+
+      async function readDataset(uploaded) {
+        const lines = (await uploaded.text()).split('\n');
+        const records = [];
+        for (const [index, line] of lines.entries()) {
+          if (!line.trim()) continue;
+          try {
+            records.push(JSON.parse(line));
+          } catch (error) {
+            if (index !== lines.length - 1) throw error;
+          }
+        }
+        return {records, metadata: {name: uploaded.name}};
       }
 
       chart.addEventListener('click', event => {
@@ -682,22 +840,16 @@
       next.addEventListener('click', () => setStep(active + 1));
       changes.addEventListener('click', () => setMode('changes'));
       fullPrompt.addEventListener('click', () => setMode('full'));
+      runSwitch.addEventListener('click', event => {
+        const button = event.target.closest('button[data-index]');
+        if (button) showDataset(Number(button.dataset.index));
+      });
       $('#show-retrievals').addEventListener('click', () => { $('#retrieval-details').open = true; });
       file.addEventListener('change', async () => {
         if (!file.files.length) return;
         try {
-          const uploaded = file.files[0];
-          const lines = (await uploaded.text()).split('\n');
-          const records = [];
-          for (const [index, line] of lines.entries()) {
-            if (!line.trim()) continue;
-            try {
-              records.push(JSON.parse(line));
-            } catch (error) {
-              if (index !== lines.length - 1) throw error;
-            }
-          }
-          load(records, {name: uploaded.name});
+          if (file.files.length > 2) throw new Error('Choose one or two JSONL traces.');
+          load(await Promise.all([...file.files].map(readDataset)));
         } catch (error) {
           alert.textContent = error.message;
           alert.hidden = false;
@@ -706,8 +858,10 @@
         }
       });
 
+      const comparison = JSON.parse($('#onward-comparison-runs').textContent);
       const embedded = JSON.parse($('#onward-embedded-trace').textContent);
-      if (embedded.length) load(embedded, JSON.parse($('#onward-run-metadata').textContent));
+      if (comparison.length) load(comparison);
+      else if (embedded.length) load([{records: embedded, metadata: JSON.parse($('#onward-run-metadata').textContent)}]);
     })();
   </script>
 </body>

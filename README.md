@@ -124,6 +124,9 @@ table. Re-read tokens estimate the size of retrieval output that reached a later
 four characters per token with rounding per message. The viewer shows run totals and counts
 through the selected request or response.
 
+Select two JSONL traces together to compare run totals, cache usage, and prompt sizes. Use the
+trace switch above the timeline to inspect either run at the selected step.
+
 ## Development
 
 ```sh
